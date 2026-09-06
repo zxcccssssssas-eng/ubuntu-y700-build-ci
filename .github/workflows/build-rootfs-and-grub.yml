@@ -1,6 +1,8 @@
 name: Build RootFS And GRUB
 
 on:
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       release_tag:
@@ -130,22 +132,22 @@ jobs:
 
       - name: Apply workflow configuration
         env:
-          INPUT_UBUNTU_MIRROR: ${{ inputs.ubuntu_mirror }}
-          INPUT_DEBOOTSTRAP_VARIANT: ${{ inputs.debootstrap_variant }}
-          INPUT_ROOTFS_IMAGE_SIZE: ${{ inputs.rootfs_image_size }}
-          INPUT_ROOTFS_LABEL: ${{ inputs.rootfs_label }}
-          INPUT_ROOTFS_PARTLABEL: ${{ inputs.rootfs_partlabel }}
-          INPUT_HOSTNAME_NAME: ${{ inputs.hostname_name }}
-          INPUT_DEFAULT_USER_NAME: ${{ inputs.default_user_name }}
-          INPUT_DEFAULT_USER_PASSWORD: ${{ inputs.default_user_password }}
-          INPUT_ROOT_PASSWORD_MODE: ${{ inputs.root_password_mode }}
-          INPUT_ROOT_PASSWORD: ${{ inputs.root_password }}
-          INPUT_USER_SUDO_MODE: ${{ inputs.user_sudo_mode }}
-          INPUT_SDDM_AUTOLOGIN: ${{ inputs.sddm_autologin }}
-          INPUT_BOOT_IMAGE_SIZE: ${{ inputs.boot_image_size }}
-          INPUT_ROOTFS_CONFIG: ${{ inputs.rootfs_config }}
-          INPUT_BOOT_CONFIG: ${{ inputs.boot_config }}
-          INPUT_SOURCE_CONFIG: ${{ inputs.source_config }}
+          INPUT_UBUNTU_MIRROR: ${{ inputs.ubuntu_mirror || 'http://ports.ubuntu.com/ubuntu-ports' }}
+          INPUT_DEBOOTSTRAP_VARIANT: ${{ inputs.debootstrap_variant || 'default' }}
+          INPUT_ROOTFS_IMAGE_SIZE: ${{ inputs.rootfs_image_size || '20G' }}
+          INPUT_ROOTFS_LABEL: ${{ inputs.rootfs_label || 'Ubuntu' }}
+          INPUT_ROOTFS_PARTLABEL: ${{ inputs.rootfs_partlabel || 'userdata' }}
+          INPUT_HOSTNAME_NAME: ${{ inputs.hostname_name || 'y700' }}
+          INPUT_DEFAULT_USER_NAME: ${{ inputs.default_user_name || 'y700' }}
+          INPUT_DEFAULT_USER_PASSWORD: ${{ inputs.default_user_password || '1234' }}
+          INPUT_ROOT_PASSWORD_MODE: ${{ inputs.root_password_mode || 'locked' }}
+          INPUT_ROOT_PASSWORD: ${{ inputs.root_password || '' }}
+          INPUT_USER_SUDO_MODE: ${{ inputs.user_sudo_mode || 'password' }}
+          INPUT_SDDM_AUTOLOGIN: ${{ inputs.sddm_autologin || false }}
+          INPUT_BOOT_IMAGE_SIZE: ${{ inputs.boot_image_size || '256M' }}
+          INPUT_ROOTFS_CONFIG: ${{ inputs.rootfs_config || '' }}
+          INPUT_BOOT_CONFIG: ${{ inputs.boot_config || '' }}
+          INPUT_SOURCE_CONFIG: ${{ inputs.source_config || '' }}
         run: |
           set -euo pipefail
           cat > "$RUNNER_TEMP/rootfs.env" <<'CONFIG_EOF'
@@ -270,7 +272,7 @@ jobs:
             echo 'OUTPUT_DIR_GRUB=out/ci-grub'
             echo "BUILD_CONFIG_NOTES_DIR=$config_notes_dir"
             echo 'OUTPUT_PREFIX<<EOF_OUTPUT_PREFIX'
-            echo '${{ inputs.output_prefix }}'
+            echo '${{ inputs.output_prefix || 'y700-kubuntu2604-arm64' }}'
             echo 'EOF_OUTPUT_PREFIX'
           } >> "$GITHUB_ENV"
 
@@ -482,7 +484,7 @@ jobs:
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.output_prefix }}-rootfs-grub
+          name: ${{ inputs.output_prefix || 'y700-kubuntu2604-arm64' }}-rootfs-grub
           path: |
             out/ci-rootfs/*
             out/ci-grub/*
@@ -493,7 +495,7 @@ jobs:
             out/ci-release/SHA256SUMS.txt
 
       - name: Upload release assets
-        if: ${{ inputs.release_tag != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag != '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.release_tag }}
