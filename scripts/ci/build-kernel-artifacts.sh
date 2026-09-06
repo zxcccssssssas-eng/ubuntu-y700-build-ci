@@ -23,6 +23,8 @@ Environment inputs:
   KERNEL_FRAGMENT            default: source/kernel/ubuntu-features.config
   KERNEL_ABI_RELEASE         expected UTS release, default: 7.1.1-g5df8e852ea72
   KERNEL_ABI_LOCALVERSION    default: -g5df8e852ea72
+                             (LOCALVERSION is forced empty so setlocalversion
+                             does not append "+" on this untagged tree)
   DTB_NAME                   default: sm8650-lenovo-tb321fu.dtb
   KERNEL_BUILD_JOBS          default: nproc
   KERNEL_MODULES_DEB_VERSION default: 0.1+ubuntu-features
@@ -117,10 +119,29 @@ fi
   echo "# CONFIG_LOCALVERSION_AUTO is not set"
 } >> "$build/.config"
 
+# scripts/setlocalversion appends "+" when LOCALVERSION is unset and HEAD is
+# not an annotated v$(KERNELVERSION) tag. This Qualcomm tree is a shallow
+# clone of 5df8e852ea72, so an unset LOCALVERSION yields
+# 7.1.1-g5df8e852ea72+ and breaks ABI/vermagic. An empty-but-set value
+# keeps UTS_RELEASE at KERNEL_ABI_RELEASE. Do not inherit a caller value.
+export LOCALVERSION=
+
 make_k() {
   make -C "$src" O="$build" ARCH="$ARCH_NAME" CROSS_COMPILE="$CROSS_COMPILE" \
+    LOCALVERSION= \
     KCFLAGS="${KCFLAGS:-}" HOSTCFLAGS="${HOSTCFLAGS:-}" \
     -j"$KERNEL_BUILD_JOBS" "$@"
+}
+
+assert_kernel_release() {
+  local stage=$1
+  local release
+  [ -f "$build/include/config/kernel.release" ] || \
+    ci_die "missing include/config/kernel.release after $stage"
+  release=$(cat "$build/include/config/kernel.release")
+  ci_log "kernel.release after $stage: $release"
+  [ "$release" = "$KERNEL_ABI_RELEASE" ] || \
+    ci_die "kernel release $release does not match ABI $KERNEL_ABI_RELEASE after $stage"
 }
 
 ci_log "olddefconfig"
@@ -135,6 +156,10 @@ if ! grep -q "^CONFIG_LOCALVERSION=" "$build/.config"; then
   echo "CONFIG_LOCALVERSION=\"$KERNEL_ABI_LOCALVERSION\"" >> "$build/.config"
 fi
 make_k olddefconfig
+# olddefconfig only refreshes .config; materialize the same kernel.release
+# the Image build will use so an ABI mismatch fails before a 30-minute compile.
+make_k include/config/auto.conf include/config/kernel.release
+assert_kernel_release olddefconfig
 
 required_opts=(
   CONFIG_WIREGUARD
@@ -152,10 +177,8 @@ grep -q '^CONFIG_DEBUG_INFO_REDUCED=y' "$build/.config" && ci_die "CONFIG_DEBUG_
 
 ci_log "building Image, DTBs and modules"
 make_k Image dtbs modules
-
+assert_kernel_release build
 release=$(cat "$build/include/config/kernel.release")
-ci_log "built kernel release: $release"
-[ "$release" = "$KERNEL_ABI_RELEASE" ] || ci_die "kernel release $release does not match ABI $KERNEL_ABI_RELEASE"
 
 image=$(find "$build" -type f -path '*/arch/arm64/boot/Image' | head -n1 || true)
 dtb=$(find "$build" -type f -name "$DTB_NAME" | head -n1 || true)

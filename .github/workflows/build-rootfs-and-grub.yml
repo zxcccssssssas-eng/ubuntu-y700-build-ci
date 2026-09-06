@@ -308,6 +308,7 @@ jobs:
             exit 0
           fi
           env OUTPUT_DIR=out/ci-kernel \
+            LOCALVERSION= \
             KERNEL_SOURCE_REPO="${KERNEL_SOURCE_REPO:-https://github.com/GUF296/linux}" \
             KERNEL_SOURCE_REF="${KERNEL_SOURCE_REF:-5df8e852ea722929f5359a5ef28ebcec0c4443fd}" \
             KERNEL_ARTIFACT_ARCHIVE="${KERNEL_ARTIFACT_ARCHIVE}" \
