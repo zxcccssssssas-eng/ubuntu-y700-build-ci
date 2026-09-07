@@ -27,7 +27,7 @@ Environment inputs:
                              does not append "+" on this untagged tree)
   DTB_NAME                   default: sm8650-lenovo-tb321fu.dtb
   KERNEL_BUILD_JOBS          default: nproc
-  KERNEL_MODULES_DEB_VERSION default: 0.1+ubuntu-features
+  KERNEL_MODULES_DEB_VERSION default: 0.1+ubuntu-features.1
 USAGE
 }
 
@@ -57,7 +57,7 @@ KERNEL_ABI_RELEASE=${KERNEL_ABI_RELEASE:-7.1.1-g5df8e852ea72}
 KERNEL_ABI_LOCALVERSION=${KERNEL_ABI_LOCALVERSION:--g5df8e852ea72}
 DTB_NAME=${DTB_NAME:-sm8650-lenovo-tb321fu.dtb}
 KERNEL_BUILD_JOBS=${KERNEL_BUILD_JOBS:-$(nproc)}
-KERNEL_MODULES_DEB_VERSION=${KERNEL_MODULES_DEB_VERSION:-0.1+ubuntu-features}
+KERNEL_MODULES_DEB_VERSION=${KERNEL_MODULES_DEB_VERSION:-0.1+ubuntu-features.1}
 ARCH_NAME=${ARCH:-arm64}
 
 mkdir -p "$OUTPUT_DIR"
@@ -169,6 +169,9 @@ required_opts=(
   CONFIG_TUN
   CONFIG_NF_TABLES
   CONFIG_VETH
+  CONFIG_IP_ADVANCED_ROUTER
+  CONFIG_IP_MULTIPLE_TABLES
+  CONFIG_FIB_RULES
 )
 for opt in "${required_opts[@]}"; do
   grep -qE "^${opt}=[ym]$" "$build/.config" || ci_die "required kernel option missing after merge: $opt"

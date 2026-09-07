@@ -431,6 +431,17 @@ net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 CONF
   chmod 0644 "$root/etc/sysctl.d/99-y700-bbr.conf"
+  cat > "$root/etc/sysctl.d/99-y700-tun.conf" <<'CONF'
+net.ipv4.ip_forward=1
+net.ipv4.conf.all.forwarding=1
+net.ipv4.conf.default.forwarding=1
+net.ipv6.conf.all.forwarding=1
+net.ipv6.conf.default.forwarding=1
+net.ipv4.conf.all.rp_filter=2
+net.ipv4.conf.default.rp_filter=2
+net.ipv4.conf.all.src_valid_mark=1
+CONF
+  chmod 0644 "$root/etc/sysctl.d/99-y700-tun.conf"
   cat > "$root/etc/modules-load.d/y700-ubuntu-features.conf" <<'CONF'
 wireguard
 nf_tables
@@ -446,6 +457,7 @@ CONF
 
   grep -q 'SM8650' "$root/usr/lib/tuned/profiles/balanced/tuned.conf" || ci_die "SM8650 balanced tuned profile missing"
   grep -q 'sm8650-apply.sh powersave' "$root/usr/lib/tuned/profiles/powersave/script.sh" || ci_die "SM8650 powersave tuned script missing"
+  grep -q 'net.ipv4.ip_forward=1' "$root/etc/sysctl.d/99-y700-tun.conf" || ci_die "TUN ip_forward sysctl missing"
 }
 
 apply_sddm_autologin() {
