@@ -60,6 +60,10 @@ Environment inputs:
   APPLY_Y700_FIRMWARE_FIXES  copy/verify required Y700 firmware paths only, default: 1
   APPLY_Y700_AUDIO_POLICY_FIXES
                               install Y700 WirePlumber ALSA policy for headset mic, default: 1
+  INSTALL_Y700_VIRTUALKEYBOARD
+                              install Plasma/Qt virtual keyboard for login, lock screen and session, default: 1
+  INSTALL_Y700_TUNED_PROFILES install SM8650 tuned-adm powersave/performance/balanced profiles, default: 1
+  KERNEL_MODULES_DEB_DIR     optional directory of rebuilt kernel module debs that replace archive modules
   CLEAN_APT_CACHE            default: 1
   COMPRESS                   none|zstd|xz|7z, default: 7z
   CHUNK_SIZE                 optional 7z volume size; empty disables volumes
@@ -107,6 +111,8 @@ LOCALES=${LOCALES:-$'en_US.UTF-8 UTF-8\nzh_CN.UTF-8 UTF-8'}
 CLEAN_APT_CACHE=${CLEAN_APT_CACHE:-1}
 APPLY_Y700_FIRMWARE_FIXES=${APPLY_Y700_FIRMWARE_FIXES:-1}
 APPLY_Y700_AUDIO_POLICY_FIXES=${APPLY_Y700_AUDIO_POLICY_FIXES:-1}
+INSTALL_Y700_VIRTUALKEYBOARD=${INSTALL_Y700_VIRTUALKEYBOARD:-1}
+INSTALL_Y700_TUNED_PROFILES=${INSTALL_Y700_TUNED_PROFILES:-1}
 BUILD_TB321FU_GPU_SENSOR=${BUILD_TB321FU_GPU_SENSOR:-1}
 TB321FU_GPU_SENSOR_SOURCE_DIR=${TB321FU_GPU_SENSOR_SOURCE_DIR:-}
 INSTALL_GNOME_SNAPSHOT=${INSTALL_GNOME_SNAPSHOT:-1}
@@ -132,6 +138,13 @@ fi
 if ci_bool "$INSTALL_FCITX5_CHINESE"; then
   PACKAGE_LIST="$PACKAGE_LIST $FCITX5_CHINESE_PACKAGES"
 fi
+if ci_bool "$INSTALL_Y700_VIRTUALKEYBOARD"; then
+  PACKAGE_LIST="$PACKAGE_LIST plasma-keyboard qt6-virtualkeyboard-plugin qml6-module-qtquick-virtualkeyboard python3 dpkg-dev"
+fi
+if ci_bool "$INSTALL_Y700_TUNED_PROFILES"; then
+  PACKAGE_LIST="$PACKAGE_LIST tuned"
+fi
+PACKAGE_LIST="$PACKAGE_LIST wireguard-tools iptables nftables iproute2"
 
 configure_mozilla_firefox_repo() {
   local root=$1
@@ -289,6 +302,150 @@ CONF
   grep -q 'api.acp.auto-profile = true' "$conf" || ci_die "Y700 ALSA policy missing auto-profile=true"
   grep -q 'api.acp.auto-port = true' "$conf" || ci_die "Y700 ALSA policy missing auto-port=true"
   grep -q 'api.alsa.split-enable = false' "$conf" || ci_die "Y700 ALSA policy missing split-enable=false"
+}
+
+apply_y700_virtualkeyboard() {
+  local root=$1
+  local layout_src="$SCRIPT_DIR/../../source/tb321fu-onscreen-keyboard/layouts"
+  local locale dest_root dest
+
+  ci_log "installing Y700 on-screen keyboard for session, login and lock screen"
+
+  [ -f "$layout_src/en_US/main.qml" ] || ci_die "missing keyboard layout: $layout_src/en_US/main.qml"
+  [ -f "$layout_src/en_US/symbols.qml" ] || ci_die "missing keyboard layout: $layout_src/en_US/symbols.qml"
+
+  install -d -m 0755 "$root/usr/share/y700-virtualkeyboard/layouts"
+  if [ -d "$root/usr/share/plasma/keyboard/layouts" ]; then
+    rsync -a "$root/usr/share/plasma/keyboard/layouts/" "$root/usr/share/y700-virtualkeyboard/layouts/"
+  fi
+  qt_layout_src=$(find "$root/usr/lib" "$root/usr/share" -type d -path '*/qtvirtualkeyboard/layouts' 2>/dev/null | head -n1 || true)
+  if [ -n "$qt_layout_src" ]; then
+    rsync -a "$qt_layout_src/" "$root/usr/share/y700-virtualkeyboard/layouts/"
+  fi
+
+  for dest_root in \
+    "$root/usr/share/plasma/keyboard/layouts" \
+    "$root/usr/share/y700-virtualkeyboard/layouts"; do
+    for locale in en_US en_GB fallback; do
+      dest="$dest_root/$locale"
+      install -d -m 0755 "$dest"
+      install -m 0644 "$layout_src/en_US/main.qml" "$dest/main.qml"
+      install -m 0644 "$layout_src/en_US/symbols.qml" "$dest/symbols.qml"
+    done
+  done
+
+  install -d -m 0755 "$root/etc/sddm.conf.d" "$root/usr/lib/systemd/system/sddm.service.d" "$root/etc/environment.d" "$root/etc/xdg" "$root/etc/skel/.config"
+  cat > "$root/etc/sddm.conf.d/10-virtualkeyboard.conf" <<'CONF'
+[General]
+InputMethod=qtvirtualkeyboard
+GreeterEnvironment=QT_IM_MODULE=qtvirtualkeyboard,QT_VIRTUALKEYBOARD_LAYOUT_PATH=/usr/share/y700-virtualkeyboard/layouts,KWIN_IM_SHOW_ALWAYS=1
+CONF
+  chmod 0644 "$root/etc/sddm.conf.d/10-virtualkeyboard.conf"
+
+  cat > "$root/usr/lib/systemd/system/sddm.service.d/10-virtualkeyboard.conf" <<'CONF'
+[Service]
+Environment=QT_IM_MODULE=qtvirtualkeyboard
+Environment=QT_VIRTUALKEYBOARD_LAYOUT_PATH=/usr/share/y700-virtualkeyboard/layouts
+Environment=KWIN_IM_SHOW_ALWAYS=1
+CONF
+  chmod 0644 "$root/usr/lib/systemd/system/sddm.service.d/10-virtualkeyboard.conf"
+
+  cat > "$root/etc/environment.d/80-y700-virtualkeyboard.conf" <<'CONF'
+KWIN_IM_SHOW_ALWAYS=1
+QT_VIRTUALKEYBOARD_LAYOUT_PATH=/usr/share/y700-virtualkeyboard/layouts
+CONF
+  chmod 0644 "$root/etc/environment.d/80-y700-virtualkeyboard.conf"
+
+  cat > "$root/etc/xdg/kwinrc" <<'KWINRC'
+[Wayland]
+InputMethod=/usr/share/applications/org.kde.plasma.keyboard.desktop
+VirtualKeyboardEnabled=true
+KWINRC
+  chmod 0644 "$root/etc/xdg/kwinrc"
+  cp -a "$root/etc/xdg/kwinrc" "$root/etc/skel/.config/kwinrc"
+
+  cat > "$root/etc/skel/.config/plasmakeyboardrc" <<'PLASMAKEYBOARDRC'
+[General]
+enabledLocales=en_US
+soundEnabled=true
+vibrationEnabled=true
+vibrationMs=20
+PLASMAKEYBOARDRC
+  chmod 0644 "$root/etc/skel/.config/plasmakeyboardrc"
+
+  if [ -d "$root/home/$DEFAULT_USER_NAME" ]; then
+    install -d -m 0755 "$root/home/$DEFAULT_USER_NAME/.config"
+    cp -a "$root/etc/skel/.config/kwinrc" "$root/home/$DEFAULT_USER_NAME/.config/kwinrc"
+    cp -a "$root/etc/skel/.config/plasmakeyboardrc" "$root/home/$DEFAULT_USER_NAME/.config/plasmakeyboardrc"
+    if grep -q "^$DEFAULT_USER_NAME:" "$root/etc/passwd"; then
+      uid=$(awk -F: -v u="$DEFAULT_USER_NAME" '$1==u {print $3}' "$root/etc/passwd")
+      gid=$(awk -F: -v u="$DEFAULT_USER_NAME" '$1==u {print $4}' "$root/etc/passwd")
+      chown "$uid:$gid" "$root/home/$DEFAULT_USER_NAME/.config/kwinrc" "$root/home/$DEFAULT_USER_NAME/.config/plasmakeyboardrc"
+    fi
+  fi
+
+  install -d -m 0755 "$root/var/lib/sddm/.config"
+  cp -a "$root/etc/xdg/kwinrc" "$root/var/lib/sddm/.config/kwinrc"
+  cp -a "$root/etc/skel/.config/plasmakeyboardrc" "$root/var/lib/sddm/.config/plasmakeyboardrc"
+  if grep -q '^sddm:' "$root/etc/passwd"; then
+    uid=$(awk -F: '$1=="sddm" {print $3}' "$root/etc/passwd")
+    gid=$(awk -F: '$1=="sddm" {print $4}' "$root/etc/passwd")
+    chown -R "$uid:$gid" "$root/var/lib/sddm"
+  else
+    chown -R 0:0 "$root/var/lib/sddm"
+  fi
+
+  grep -q '^InputMethod=qtvirtualkeyboard$' "$root/etc/sddm.conf.d/10-virtualkeyboard.conf" || ci_die "SDDM virtual keyboard InputMethod was not written"
+  grep -q 'VirtualKeyboardEnabled=true' "$root/etc/xdg/kwinrc" || ci_die "kwin virtual keyboard was not enabled"
+}
+
+apply_y700_tuned_profiles() {
+  local root=$1
+  local src="$SCRIPT_DIR/../../source/tb321fu-tuned-profiles"
+  local profile dest
+
+  ci_log "installing SM8650 tuned-adm profiles"
+
+  [ -f "$src/usr/libexec/tb321fu-tuned/sm8650-apply.sh" ] || ci_die "missing SM8650 tuned helper"
+  install -d -m 0755 "$root/usr/libexec/tb321fu-tuned" "$root/usr/lib/tuned/profiles" "$root/usr/lib/tuned" "$root/etc/tuned"
+  install -m 0755 "$src/usr/libexec/tb321fu-tuned/sm8650-apply.sh" "$root/usr/libexec/tb321fu-tuned/sm8650-apply.sh"
+
+  for profile in powersave performance balanced balance; do
+    dest="$root/usr/lib/tuned/profiles/$profile"
+    install -d -m 0755 "$dest"
+    install -m 0644 "$src/usr/lib/tuned/profiles/$profile/tuned.conf" "$dest/tuned.conf"
+    if [ -f "$src/usr/lib/tuned/profiles/$profile/script.sh" ]; then
+      install -m 0755 "$src/usr/lib/tuned/profiles/$profile/script.sh" "$dest/script.sh"
+    fi
+    rm -rf "$root/usr/lib/tuned/$profile"
+    cp -a "$dest" "$root/usr/lib/tuned/$profile"
+  done
+
+  printf 'balanced\n' > "$root/etc/tuned/active_profile"
+  printf 'manual\n' > "$root/etc/tuned/profile_mode"
+  chmod 0644 "$root/etc/tuned/active_profile" "$root/etc/tuned/profile_mode"
+
+  install -d -m 0755 "$root/etc/sysctl.d" "$root/etc/modules-load.d"
+  cat > "$root/etc/sysctl.d/99-y700-bbr.conf" <<'CONF'
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+CONF
+  chmod 0644 "$root/etc/sysctl.d/99-y700-bbr.conf"
+  cat > "$root/etc/modules-load.d/y700-ubuntu-features.conf" <<'CONF'
+wireguard
+nf_tables
+zram
+CONF
+  chmod 0644 "$root/etc/modules-load.d/y700-ubuntu-features.conf"
+
+  if [ -f "$root/usr/lib/systemd/system/tuned.service" ]; then
+    install -d -m 0755 "$root/etc/systemd/system/multi-user.target.wants"
+    ln -sfn /usr/lib/systemd/system/tuned.service \
+      "$root/etc/systemd/system/multi-user.target.wants/tuned.service"
+  fi
+
+  grep -q 'SM8650' "$root/usr/lib/tuned/profiles/balanced/tuned.conf" || ci_die "SM8650 balanced tuned profile missing"
+  grep -q 'sm8650-apply.sh powersave' "$root/usr/lib/tuned/profiles/powersave/script.sh" || ci_die "SM8650 powersave tuned script missing"
 }
 
 apply_sddm_autologin() {
@@ -853,6 +1010,12 @@ if compgen -G "/var/tmp/ci-debs/*.deb" >/dev/null; then
   dpkg -i --force-overwrite /var/tmp/ci-debs/*.deb || apt-get -f install -y
 fi
 
+if ci_bool_chroot "${INSTALL_Y700_VIRTUALKEYBOARD:-1}"; then
+  if [ -x /root/ci-rebuild-plasma-keyboard.sh ]; then
+    bash /root/ci-rebuild-plasma-keyboard.sh
+  fi
+fi
+
 for ci_overlay in /var/tmp/ci-debs/*.tar /var/tmp/ci-debs/*.tar.gz /var/tmp/ci-debs/*.tgz /var/tmp/ci-debs/*.tar.xz /var/tmp/ci-debs/*.tar.zst; do
   [ -e "$ci_overlay" ] || continue
   case "$ci_overlay" in
@@ -882,9 +1045,14 @@ rm -f /etc/apt/apt.conf.d/99ci-proxy
 rm -f /etc/machine-id
 touch /etc/machine-id
 rm -f /root/.bash_history "/home/${DEFAULT_USER_NAME}/.bash_history"
-rm -rf /tmp/* /var/tmp/ci-debs /root/ci-provision.sh
+rm -rf /tmp/* /var/tmp/ci-debs /root/ci-provision.sh /root/ci-rebuild-plasma-keyboard.sh /root/patch-plasma-keyboard-modifiers.py
 PROVISION
 chmod +x "$rootfs_dir/root/ci-provision.sh"
+
+if ci_bool "$INSTALL_Y700_VIRTUALKEYBOARD"; then
+  install -m 0755 "$SCRIPT_DIR/patch-plasma-keyboard-modifiers.py" "$rootfs_dir/root/patch-plasma-keyboard-modifiers.py"
+  install -m 0755 "$SCRIPT_DIR/rebuild-plasma-keyboard-in-chroot.sh" "$rootfs_dir/root/ci-rebuild-plasma-keyboard.sh"
+fi
 
 if [ -n "${DEB_ARCHIVE:-}" ]; then
   tmp_archive="$work_dir/debs.archive"
@@ -917,6 +1085,12 @@ if [ -n "${CAMERA_STACK_DEB_DIR:-}" ]; then
   ci_log "including source-built camera stack debs from: $CAMERA_STACK_DEB_DIR"
   find "$CAMERA_STACK_DEB_DIR" -maxdepth 1 -type f -name '*.deb' -exec cp -a {} "$rootfs_dir/var/tmp/ci-debs/" \;
 fi
+if [ -n "${KERNEL_MODULES_DEB_DIR:-}" ]; then
+  mkdir -p "$rootfs_dir/var/tmp/ci-debs"
+  ci_log "replacing kernel module debs from: $KERNEL_MODULES_DEB_DIR"
+  find "$rootfs_dir/var/tmp/ci-debs" -maxdepth 1 -type f -name '*kernel-modules*.deb' -delete
+  find "$KERNEL_MODULES_DEB_DIR" -maxdepth 1 -type f -name '*.deb' -exec cp -a {} "$rootfs_dir/var/tmp/ci-debs/" \;
+fi
 
 if ci_bool "$INSTALL_FIREFOX"; then
   configure_mozilla_firefox_repo "$rootfs_dir"
@@ -935,6 +1109,7 @@ chroot "$rootfs_dir" env -i \
   ROOT_PASSWORD="$ROOT_PASSWORD" \
   USER_SUDO_MODE="$USER_SUDO_MODE" \
   INSTALL_FIREFOX="$INSTALL_FIREFOX" \
+  INSTALL_Y700_VIRTUALKEYBOARD="$INSTALL_Y700_VIRTUALKEYBOARD" \
   DISABLE_SNAPD="$DISABLE_SNAPD" \
   TZ_REGION="$TZ_REGION" \
   LOCALES="$LOCALES" \
@@ -977,6 +1152,12 @@ fi
 if ci_bool "$APPLY_Y700_AUDIO_POLICY_FIXES"; then
   apply_y700_audio_policy_fixes "$rootfs_dir"
 fi
+if ci_bool "$INSTALL_Y700_VIRTUALKEYBOARD"; then
+  apply_y700_virtualkeyboard "$rootfs_dir"
+fi
+if ci_bool "$INSTALL_Y700_TUNED_PROFILES"; then
+  apply_y700_tuned_profiles "$rootfs_dir"
+fi
 if ci_bool "$BUILD_TB321FU_GPU_SENSOR"; then
   apply_tb321fu_gpu_sensor "$rootfs_dir"
 fi
@@ -1013,6 +1194,9 @@ install_fcitx5_chinese=$INSTALL_FCITX5_CHINESE
 disable_snapd=$DISABLE_SNAPD
 apply_y700_firmware_fixes=$APPLY_Y700_FIRMWARE_FIXES
 apply_y700_audio_policy_fixes=$APPLY_Y700_AUDIO_POLICY_FIXES
+install_y700_virtualkeyboard=$INSTALL_Y700_VIRTUALKEYBOARD
+install_y700_tuned_profiles=$INSTALL_Y700_TUNED_PROFILES
+kernel_modules_deb_dir=${KERNEL_MODULES_DEB_DIR:-}
 INFO
 
 rm -f \

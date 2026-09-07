@@ -1,6 +1,8 @@
 name: Build RootFS And GRUB
 
 on:
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       release_tag:
@@ -112,7 +114,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
-    timeout-minutes: 240
+    timeout-minutes: 360
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -125,26 +127,27 @@ jobs:
             debootstrap dosfstools mtools e2fsprogs rsync curl unzip tar xz-utils zstd p7zip-full \
             gdisk qemu-utils sudo ca-certificates gnupg binutils \
             meson ninja-build pkg-config protobuf-c-compiler gcc-aarch64-linux-gnu \
-            libglib2.0-dev:arm64 libqmi-glib-dev:arm64 libgudev-1.0-dev:arm64 libpolkit-gobject-1-dev:arm64 libprotobuf-c-dev:arm64
+            libglib2.0-dev:arm64 libqmi-glib-dev:arm64 libgudev-1.0-dev:arm64 libpolkit-gobject-1-dev:arm64 libprotobuf-c-dev:arm64 \
+            build-essential bison flex libssl-dev libelf-dev bc dwarves python3 kmod git
 
       - name: Apply workflow configuration
         env:
-          INPUT_UBUNTU_MIRROR: ${{ inputs.ubuntu_mirror }}
-          INPUT_DEBOOTSTRAP_VARIANT: ${{ inputs.debootstrap_variant }}
-          INPUT_ROOTFS_IMAGE_SIZE: ${{ inputs.rootfs_image_size }}
-          INPUT_ROOTFS_LABEL: ${{ inputs.rootfs_label }}
-          INPUT_ROOTFS_PARTLABEL: ${{ inputs.rootfs_partlabel }}
-          INPUT_HOSTNAME_NAME: ${{ inputs.hostname_name }}
-          INPUT_DEFAULT_USER_NAME: ${{ inputs.default_user_name }}
-          INPUT_DEFAULT_USER_PASSWORD: ${{ inputs.default_user_password }}
-          INPUT_ROOT_PASSWORD_MODE: ${{ inputs.root_password_mode }}
-          INPUT_ROOT_PASSWORD: ${{ inputs.root_password }}
-          INPUT_USER_SUDO_MODE: ${{ inputs.user_sudo_mode }}
-          INPUT_SDDM_AUTOLOGIN: ${{ inputs.sddm_autologin }}
-          INPUT_BOOT_IMAGE_SIZE: ${{ inputs.boot_image_size }}
-          INPUT_ROOTFS_CONFIG: ${{ inputs.rootfs_config }}
-          INPUT_BOOT_CONFIG: ${{ inputs.boot_config }}
-          INPUT_SOURCE_CONFIG: ${{ inputs.source_config }}
+          INPUT_UBUNTU_MIRROR: ${{ inputs.ubuntu_mirror || 'http://ports.ubuntu.com/ubuntu-ports' }}
+          INPUT_DEBOOTSTRAP_VARIANT: ${{ inputs.debootstrap_variant || 'default' }}
+          INPUT_ROOTFS_IMAGE_SIZE: ${{ inputs.rootfs_image_size || '20G' }}
+          INPUT_ROOTFS_LABEL: ${{ inputs.rootfs_label || 'Ubuntu' }}
+          INPUT_ROOTFS_PARTLABEL: ${{ inputs.rootfs_partlabel || 'userdata' }}
+          INPUT_HOSTNAME_NAME: ${{ inputs.hostname_name || 'y700' }}
+          INPUT_DEFAULT_USER_NAME: ${{ inputs.default_user_name || 'y700' }}
+          INPUT_DEFAULT_USER_PASSWORD: ${{ inputs.default_user_password || '1234' }}
+          INPUT_ROOT_PASSWORD_MODE: ${{ inputs.root_password_mode || 'locked' }}
+          INPUT_ROOT_PASSWORD: ${{ inputs.root_password || '' }}
+          INPUT_USER_SUDO_MODE: ${{ inputs.user_sudo_mode || 'password' }}
+          INPUT_SDDM_AUTOLOGIN: ${{ inputs.sddm_autologin || false }}
+          INPUT_BOOT_IMAGE_SIZE: ${{ inputs.boot_image_size || '256M' }}
+          INPUT_ROOTFS_CONFIG: ${{ inputs.rootfs_config || '' }}
+          INPUT_BOOT_CONFIG: ${{ inputs.boot_config || '' }}
+          INPUT_SOURCE_CONFIG: ${{ inputs.source_config || '' }}
         run: |
           set -euo pipefail
           cat > "$RUNNER_TEMP/rootfs.env" <<'CONFIG_EOF'
@@ -181,6 +184,8 @@ jobs:
           INSTALL_GNOME_SNAPSHOT=1
           INSTALL_FIREFOX=1
           INSTALL_FCITX5_CHINESE=1
+          INSTALL_Y700_VIRTUALKEYBOARD=1
+          INSTALL_Y700_TUNED_PROFILES=1
           DISABLE_SNAPD=1
           APPLY_Y700_FIRMWARE_FIXES=1
           APPLY_Y700_AUDIO_POLICY_FIXES=1
@@ -206,6 +211,12 @@ jobs:
           CONFIG_EOF
           cat > "$RUNNER_TEMP/source.env" <<'CONFIG_EOF'
           KERNEL_ARTIFACT_ARCHIVE=https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/bootstrap-y700-20260625/y700-kernel-artifacts-7.1.1-g5df8e852ea72.tar.gz
+          BUILD_KERNEL_UBUNTU_FEATURES=1
+          KERNEL_SOURCE_REPO=https://github.com/GUF296/linux
+          KERNEL_SOURCE_REF=5df8e852ea722929f5359a5ef28ebcec0c4443fd
+          KERNEL_ABI_RELEASE=7.1.1-g5df8e852ea72
+          KERNEL_ABI_LOCALVERSION=-g5df8e852ea72
+          KERNEL_MODULES_DEB_VERSION=0.1+ubuntu-features
           BOOTAA64_EFI_URL=
           QCOMRAMP_EFI_URL=
           QCOMRAMP_CFG_NAME=qcomramp.cfg
@@ -261,7 +272,7 @@ jobs:
             echo 'OUTPUT_DIR_GRUB=out/ci-grub'
             echo "BUILD_CONFIG_NOTES_DIR=$config_notes_dir"
             echo 'OUTPUT_PREFIX<<EOF_OUTPUT_PREFIX'
-            echo '${{ inputs.output_prefix }}'
+            echo '${{ inputs.output_prefix || 'y700-kubuntu2604-arm64' }}'
             echo 'EOF_OUTPUT_PREFIX'
           } >> "$GITHUB_ENV"
 
@@ -287,6 +298,33 @@ jobs:
             echo 'Either GRUB_BUILD_ARCHIVE, QCOMRAMP_EFI_URL, or BOOT_TEMPLATE_IMAGE must be set.' >&2
             exit 1
           fi
+
+      - name: Build kernel with Ubuntu-like features
+        run: |
+          set -euo pipefail
+          if [ "${BUILD_KERNEL_UBUNTU_FEATURES:-1}" != "1" ]; then
+            echo 'BUILD_KERNEL_UBUNTU_FEATURES is not 1; using prebuilt kernel artifacts.'
+            echo 'KERNEL_MODULES_DEB_DIR=' >> "$GITHUB_ENV"
+            exit 0
+          fi
+          env OUTPUT_DIR=out/ci-kernel \
+            LOCALVERSION= \
+            KERNEL_SOURCE_REPO="${KERNEL_SOURCE_REPO:-https://github.com/GUF296/linux}" \
+            KERNEL_SOURCE_REF="${KERNEL_SOURCE_REF:-5df8e852ea722929f5359a5ef28ebcec0c4443fd}" \
+            KERNEL_ARTIFACT_ARCHIVE="${KERNEL_ARTIFACT_ARCHIVE}" \
+            KERNEL_FRAGMENT="${KERNEL_FRAGMENT:-source/kernel/ubuntu-features.config}" \
+            KERNEL_ABI_RELEASE="${KERNEL_ABI_RELEASE:-7.1.1-g5df8e852ea72}" \
+            KERNEL_ABI_LOCALVERSION="${KERNEL_ABI_LOCALVERSION:--g5df8e852ea72}" \
+            KERNEL_MODULES_DEB_VERSION="${KERNEL_MODULES_DEB_VERSION:-0.1+ubuntu-features}" \
+            DTB_NAME="${DTB_NAME:-sm8650-lenovo-tb321fu.dtb}" \
+            KERNEL_BUILD_JOBS="${KERNEL_BUILD_JOBS:-$(nproc)}" \
+            bash scripts/ci/build-kernel-artifacts.sh
+          artifact=$(find out/ci-kernel -maxdepth 1 -type f -name 'y700-kernel-artifacts-*.tar.gz' | head -n1)
+          test -n "$artifact"
+          {
+            echo "KERNEL_ARTIFACT_ARCHIVE=$PWD/$artifact"
+            echo "KERNEL_MODULES_DEB_DIR=$PWD/out/ci-kernel"
+          } >> "$GITHUB_ENV"
 
       - name: Build source sensor debs
         run: |
@@ -392,7 +430,7 @@ jobs:
       - name: Build rootfs image
         run: |
           set -euo pipefail
-          sudo --preserve-env=OUTPUT_PREFIX,DISTRO,ARCH,MIRROR,DEBOOTSTRAP_VARIANT,RESOLV_CONF_CONTENT,APT_HTTP_PROXY,APT_HTTPS_PROXY,http_proxy,https_proxy,HTTP_PROXY,HTTPS_PROXY,APT_SOURCES_LIST,ROOTFS_IMAGE_SIZE,ROOTFS_UUID,ROOTFS_LABEL,ROOTFS_PARTLABEL,HOSTNAME_NAME,DEFAULT_USER_NAME,DEFAULT_USER_PASSWORD,ROOT_PASSWORD_MODE,ROOT_PASSWORD,USER_SUDO_MODE,SDDM_AUTOLOGIN,SDDM_AUTOLOGIN_SESSION,TZ_REGION,LOCALES,LANG_NAME,PACKAGE_LIST,DESKTOP_ENV,OVERLAY_ARCHIVE,DEB_ARCHIVE,DEB_DIR,SENSOR_DEB_ARCHIVE,SENSOR_DEB_DIR,HAPTICS_DEB_ARCHIVE,HAPTICS_DEB_DIR,CAMERA_STACK_DEB_DIR,BUILD_TB321FU_GPU_SENSOR,TB321FU_GPU_SENSOR_SOURCE_DIR,TB321FU_GPU_SENSOR_BUILD_JOBS,INSTALL_GNOME_SNAPSHOT,INSTALL_FIREFOX,INSTALL_FCITX5_CHINESE,FCITX5_CHINESE_PACKAGES,DISABLE_SNAPD,APPLY_Y700_FIRMWARE_FIXES,APPLY_Y700_AUDIO_POLICY_FIXES,CLEAN_APT_CACHE,COMPRESS,CHUNK_SIZE,KEEP_RAW_IMAGE \
+          sudo --preserve-env=OUTPUT_PREFIX,DISTRO,ARCH,MIRROR,DEBOOTSTRAP_VARIANT,RESOLV_CONF_CONTENT,APT_HTTP_PROXY,APT_HTTPS_PROXY,http_proxy,https_proxy,HTTP_PROXY,HTTPS_PROXY,APT_SOURCES_LIST,ROOTFS_IMAGE_SIZE,ROOTFS_UUID,ROOTFS_LABEL,ROOTFS_PARTLABEL,HOSTNAME_NAME,DEFAULT_USER_NAME,DEFAULT_USER_PASSWORD,ROOT_PASSWORD_MODE,ROOT_PASSWORD,USER_SUDO_MODE,SDDM_AUTOLOGIN,SDDM_AUTOLOGIN_SESSION,TZ_REGION,LOCALES,LANG_NAME,PACKAGE_LIST,DESKTOP_ENV,OVERLAY_ARCHIVE,DEB_ARCHIVE,DEB_DIR,SENSOR_DEB_ARCHIVE,SENSOR_DEB_DIR,HAPTICS_DEB_ARCHIVE,HAPTICS_DEB_DIR,CAMERA_STACK_DEB_DIR,KERNEL_MODULES_DEB_DIR,BUILD_TB321FU_GPU_SENSOR,TB321FU_GPU_SENSOR_SOURCE_DIR,TB321FU_GPU_SENSOR_BUILD_JOBS,INSTALL_GNOME_SNAPSHOT,INSTALL_FIREFOX,INSTALL_FCITX5_CHINESE,FCITX5_CHINESE_PACKAGES,DISABLE_SNAPD,APPLY_Y700_FIRMWARE_FIXES,APPLY_Y700_AUDIO_POLICY_FIXES,INSTALL_Y700_VIRTUALKEYBOARD,INSTALL_Y700_TUNED_PROFILES,CLEAN_APT_CACHE,COMPRESS,CHUNK_SIZE,KEEP_RAW_IMAGE \
             env OUTPUT_DIR="$OUTPUT_DIR_ROOTFS" SENSOR_DEB_DIR="${Y700_SENSOR_DEB_DIR:-${SENSOR_DEB_DIR:-}}" HAPTICS_DEB_DIR="${TB321FU_HAPTICS_DEB_DIR:-${HAPTICS_DEB_DIR:-}}" CAMERA_STACK_DEB_DIR="${TB321FU_CAMERA_STACK_DEB_DIR:-}" bash scripts/ci/build-rootfs-image.sh
           sudo chown -R "$USER:$USER" out
 
@@ -439,22 +477,26 @@ jobs:
           if [ -d out/tb321fu-camera-stack-debs ]; then
             checksum_dirs+=(out/tb321fu-camera-stack-debs)
           fi
+          if [ -d out/ci-kernel ]; then
+            checksum_dirs+=(out/ci-kernel)
+          fi
           find "${checksum_dirs[@]}" -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > out/ci-release/SHA256SUMS.txt
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.output_prefix }}-rootfs-grub
+          name: ${{ inputs.output_prefix || 'y700-kubuntu2604-arm64' }}-rootfs-grub
           path: |
             out/ci-rootfs/*
             out/ci-grub/*
             out/y700-sensor-debs/*
             out/tb321fu-haptics-debs/*
             out/tb321fu-camera-stack-debs/*
+            out/ci-kernel/*
             out/ci-release/SHA256SUMS.txt
 
       - name: Upload release assets
-        if: ${{ inputs.release_tag != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag != '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.release_tag }}
