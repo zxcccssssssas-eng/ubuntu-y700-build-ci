@@ -25,6 +25,7 @@ install="$ROOT/source/y700-dkms-rootfs-only/usr/lib/y700-dkms/install-pinned-mod
 [ -x "$install" ] || fail "install-pinned-module.sh must be executable"
 grep -q 'update-initramfs' "$protect" || fail "protect-boot-tools.sh must divert update-initramfs"
 grep -q 'grub-install' "$protect" || fail "protect-boot-tools.sh must divert grub-install"
+grep -q 'install -d' "$protect" || fail "protect-boot-tools.sh must create missing boot-hook directories"
 grep -q 'refusing boot/grub update' "$skip" || fail "skip-boot-tool must refuse boot/grub updates"
 grep -q 'cmp -s' "$install" || fail "install-pinned-module.sh must compare /boot before and after DKMS"
 

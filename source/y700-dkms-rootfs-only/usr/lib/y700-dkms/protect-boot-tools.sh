@@ -17,6 +17,7 @@ write_file() {
 
 protect_tool() {
 	tool=$1
+	install -d -m 0755 "$(dirname "$tool")"
 	if ! dpkg-divert --list "$tool" 2>/dev/null | grep -q "$PACKAGE_NAME"; then
 		dpkg-divert --package "$PACKAGE_NAME" --add --rename --divert "${tool}.y700-real" "$tool"
 	fi
