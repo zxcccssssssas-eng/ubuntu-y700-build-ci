@@ -48,6 +48,8 @@ PACKAGE_LIST=
 DESKTOP_ENV=plasma-desktop
 INSTALL_FIREFOX=1
 INSTALL_FCITX5_CHINESE=1
+INSTALL_DKMS=1
+INSTALL_AMNEZIAWG=1
 DISABLE_SNAPD=1
 OVERLAY_ARCHIVE=
 DEB_ARCHIVE=
@@ -86,6 +88,11 @@ Optional override example:
 
 ```text
 KERNEL_ARTIFACT_ARCHIVE=https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/bootstrap-y700-20260625/y700-kernel-artifacts-7.1.1-g5df8e852ea72.tar.gz
+KERNEL_ABI_RELEASE=7.1.1-g5df8e852ea72
+AMNEZIAWG_MODULE_REPO=https://github.com/amnezia-vpn/amneziawg-linux-kernel-module
+AMNEZIAWG_MODULE_REF=4569c4c67f3a57414969260cafbbd04694fbaae0
+AMNEZIAWG_TOOLS_REPO=https://github.com/amnezia-vpn/amneziawg-tools
+AMNEZIAWG_TOOLS_REF=ee0f0a9aa34ff0a0da4b3433b9512781cfe02843
 BOOTAA64_EFI_URL=https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/bootstrap-y700-20260625/BOOTAA64.EFI
 QCOMRAMP_EFI_URL=https://github.com/GUF296/ubuntu-y700-build-ci/releases/download/bootstrap-y700-20260625/QCOMRAMP-CONFIGFILE.EFI
 QCOMRAMP_CFG_NAME=qcomramp.cfg
@@ -96,6 +103,8 @@ DTB_NAME=sm8650-lenovo-tb321fu.dtb
 ## Scripts
 
 - `scripts/ci/build-rootfs-image.sh`: builds an ext4 rootfs image from debootstrap plus declared overlays/debs.
+- `scripts/ci/build-kernel-artifacts.sh`: rebuilds the device kernel with Ubuntu-like features while pinning the existing ABI, and packages modules plus DKMS headers.
+- `scripts/ci/build-amneziawg-debs.sh`: builds AmneziaWG DKMS/tools debs and the rootfs-only DKMS policy package.
 - `scripts/ci/build-grub-image.sh`: builds a FAT boot image containing BOOTAA64.EFI, a prebuilt or generated QCOMRAMP.EFI, Image, DTB and GRUB config.
 - `scripts/ci/build-tb321fu-camera-stack-deb.sh`: builds the live-verified TB321FU camera stack deb from `source/tb321fu-camera-rootfs-overlay` or an explicit camera overlay archive.
 - `scripts/ci/pack-disk-image.sh`: optional GPT disk image packer for a FAT boot image plus ext4 rootfs image.
@@ -144,3 +153,23 @@ Recommended split:
 - `tb321fu-haptics-debs`: build the AW86937 external module from the matching Linux source/build artifacts plus TB321FU haptics glue, then release a haptics deb archive.
 
 The rootfs workflow references those release assets through `SENSOR_DEB_ARCHIVE` and `HAPTICS_DEB_ARCHIVE` by default.
+
+## AmneziaWG and DKMS
+
+AmneziaWG is shipped as an out-of-tree DKMS module so the pinned kernel ABI (`7.1.1-g5df8e852ea72`) stays unchanged. The kernel Image/DTB on the FAT GRUB partition are not rebuilt for AmneziaWG.
+
+Rootfs contents:
+
+- `y700-daily-kernel-headers`: kbuild headers for the pinned ABI, under `/usr/src/linux-headers-*` and `/usr/lib/modules/<abi>/build`
+- `dkms` plus a compiler toolchain so modules can be rebuilt on the device
+- `y700-dkms-rootfs-only`: diverts `update-initramfs` / GRUB tools so DKMS cannot write `/boot`, initramfs, or the GRUB FAT partition
+- `amneziawg-dkms`: DKMS source plus a prebuilt `amneziawg.ko` in `/usr/lib/modules/<abi>/updates/`
+- `amneziawg-tools`: `awg` and `awg-quick`
+
+DKMS is configured with `AUTOINSTALL=no`, no `REMAKE_INITRD`, `DEST_MODULE_LOCATION=/updates`, and `BUILD_EXCLUSIVE_KERNEL` pinned to the ABI. On-device rebuilds:
+
+```sh
+sudo /usr/lib/y700-dkms/install-pinned-module.sh amneziawg 1.0.0 7.1.1-g5df8e852ea72
+```
+
+Disable with `INSTALL_AMNEZIAWG=0` and/or `INSTALL_DKMS=0` in `rootfs_config`. AmneziaWG requires the in-workflow kernel rebuild (`BUILD_KERNEL_UBUNTU_FEATURES=1`) so headers match the ABI.

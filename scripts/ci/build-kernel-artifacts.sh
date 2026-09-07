@@ -28,6 +28,7 @@ Environment inputs:
   DTB_NAME                   default: sm8650-lenovo-tb321fu.dtb
   KERNEL_BUILD_JOBS          default: nproc
   KERNEL_MODULES_DEB_VERSION default: 0.1+ubuntu-features
+  KERNEL_HEADERS_DEB_VERSION default: KERNEL_MODULES_DEB_VERSION
 USAGE
 }
 
@@ -58,6 +59,7 @@ KERNEL_ABI_LOCALVERSION=${KERNEL_ABI_LOCALVERSION:--g5df8e852ea72}
 DTB_NAME=${DTB_NAME:-sm8650-lenovo-tb321fu.dtb}
 KERNEL_BUILD_JOBS=${KERNEL_BUILD_JOBS:-$(nproc)}
 KERNEL_MODULES_DEB_VERSION=${KERNEL_MODULES_DEB_VERSION:-0.1+ubuntu-features}
+KERNEL_HEADERS_DEB_VERSION=${KERNEL_HEADERS_DEB_VERSION:-$KERNEL_MODULES_DEB_VERSION}
 ARCH_NAME=${ARCH:-arm64}
 
 mkdir -p "$OUTPUT_DIR"
@@ -185,6 +187,131 @@ dtb=$(find "$build" -type f -name "$DTB_NAME" | head -n1 || true)
 [ -n "$image" ] && [ -f "$image" ] || ci_die "missing built Image"
 [ -n "$dtb" ] && [ -f "$dtb" ] || ci_die "missing built DTB: $DTB_NAME"
 
+# Package kbuild headers so DKMS can rebuild out-of-tree modules against this
+# ABI. Files live under /usr/src and /usr/lib/modules on rootfs only; this
+# never installs Image, DTB, or anything into /boot or GRUB.
+package_kernel_headers_deb() {
+  local hdr_pkg hdrdir install_script hdr_release
+  local karch=$ARCH_NAME
+
+  hdr_pkg="$work_dir/pkg/y700-daily-kernel-headers"
+  hdrdir="$hdr_pkg/usr/src/linux-headers-$release"
+  rm -rf "$hdr_pkg"
+  install -d -m 0755 "$hdrdir" "$hdr_pkg/usr/lib/modules/$release" "$hdr_pkg/DEBIAN"
+
+  if grep -q '^CONFIG_DEBUG_INFO_BTF_MODULES=y' "$build/.config"; then
+    if [ ! -x "$build/tools/bpf/resolve_btfids/resolve_btfids" ]; then
+      ci_log "building resolve_btfids for DKMS headers"
+      make_k tools/bpf/resolve_btfids/resolve_btfids || true
+    fi
+  fi
+  if grep -q '^CONFIG_OBJTOOL=y' "$build/.config"; then
+    if [ ! -x "$build/tools/objtool/objtool" ]; then
+      ci_log "building objtool for DKMS headers"
+      make_k tools/objtool || true
+    fi
+  fi
+
+  install_script="$src/scripts/package/install-extmod-build"
+  if [ -f "$install_script" ]; then
+    ci_log "packaging kernel headers with install-extmod-build"
+    if ! (
+      cd "$build"
+      srctree="$src" SRCARCH="$karch" ARCH="$karch" MAKE=make \
+        CC="${CROSS_COMPILE}gcc" HOSTCC="${CROSS_COMPILE}gcc" \
+        sh "$install_script" "$hdrdir"
+    ); then
+      ci_log "install-extmod-build failed; using fallback header packager"
+      rm -rf "$hdrdir"
+      install -d -m 0755 "$hdrdir"
+      install_script=""
+    fi
+  fi
+  if [ ! -f "$install_script" ]; then
+    ci_log "using fallback header packager"
+    cp -a "$src/Makefile" "$hdrdir/"
+    [ -f "$src/Kbuild" ] && cp -a "$src/Kbuild" "$hdrdir/"
+    [ -f "$src/Kconfig" ] && cp -a "$src/Kconfig" "$hdrdir/"
+    mkdir -p "$hdrdir/arch/$karch"
+    find "$src/arch/$karch" -maxdepth 1 -name 'Makefile*' -exec cp -a {} "$hdrdir/arch/$karch/" \;
+    rsync -a --exclude 'config/' --exclude 'generated/' "$src/include/" "$hdrdir/include/"
+    if [ -d "$src/arch/$karch/include" ]; then
+      rsync -a "$src/arch/$karch/include" "$hdrdir/arch/$karch/"
+    fi
+    rsync -a \
+      --exclude 'atomic/' --exclude 'dtc/' --exclude 'kconfig/' --exclude 'package/' \
+      "$src/scripts/" "$hdrdir/scripts/"
+    rsync -a "$build/scripts/" "$hdrdir/scripts/"
+    mkdir -p "$hdrdir/include"
+    [ -d "$build/include/config" ] && rsync -a "$build/include/config" "$hdrdir/include/"
+    [ -d "$build/include/generated" ] && rsync -a "$build/include/generated" "$hdrdir/include/"
+    if [ -d "$build/arch/$karch/include/generated" ]; then
+      mkdir -p "$hdrdir/arch/$karch/include"
+      rsync -a "$build/arch/$karch/include/generated" "$hdrdir/arch/$karch/include/"
+    fi
+    [ -f "$build/Module.symvers" ] && cp -a "$build/Module.symvers" "$hdrdir/"
+    if [ -x "$build/tools/bpf/resolve_btfids/resolve_btfids" ]; then
+      install -d -m 0755 "$hdrdir/tools/bpf/resolve_btfids"
+      cp -a "$build/tools/bpf/resolve_btfids/resolve_btfids" "$hdrdir/tools/bpf/resolve_btfids/"
+    fi
+    if [ -x "$build/tools/objtool/objtool" ]; then
+      install -d -m 0755 "$hdrdir/tools/objtool"
+      cp -a "$build/tools/objtool/objtool" "$hdrdir/tools/objtool/"
+    fi
+    find "$hdrdir" \( -name '.*.cmd' -o -name '*.o' \) -delete
+  fi
+
+  [ -f "$build/.config" ] && cp -a "$build/.config" "$hdrdir/.config"
+  [ -f "$build/Module.symvers" ] && cp -a "$build/Module.symvers" "$hdrdir/Module.symvers"
+  [ -f "$build/System.map" ] && cp -a "$build/System.map" "$hdrdir/System.map"
+  # Stop kbuild from re-running syncconfig against this merged header tree.
+  rm -f "$hdrdir/include/config/auto.conf.cmd"
+  if [ -f "$hdrdir/.config" ] && [ -f "$hdrdir/include/config/auto.conf" ]; then
+    touch -r "$hdrdir/.config" "$hdrdir/include/config/auto.conf"
+  fi
+
+  [ -f "$hdrdir/Makefile" ] || ci_die "kernel headers package missing Makefile"
+  [ -f "$hdrdir/Module.symvers" ] || ci_die "kernel headers package missing Module.symvers"
+  [ -f "$hdrdir/include/config/kernel.release" ] || ci_die "kernel headers package missing kernel.release"
+  hdr_release=$(cat "$hdrdir/include/config/kernel.release")
+  [ "$hdr_release" = "$KERNEL_ABI_RELEASE" ] || \
+    ci_die "headers kernel.release $hdr_release does not match ABI $KERNEL_ABI_RELEASE"
+
+  ln -sfn "/usr/src/linux-headers-$release" "$hdr_pkg/usr/lib/modules/$release/build"
+  ln -sfn "/usr/src/linux-headers-$release" "$hdr_pkg/usr/lib/modules/$release/source"
+
+  cat > "$hdr_pkg/DEBIAN/control" <<CTRL
+Package: y700-daily-kernel-headers
+Version: $KERNEL_HEADERS_DEB_VERSION
+Section: kernel
+Priority: optional
+Architecture: arm64
+Maintainer: Y700 local build <root@localhost>
+Provides: linux-headers-$release, linux-headers-generic
+Recommends: dkms, build-essential, dwarves, libelf-dev
+Description: Kbuild headers for $release used by DKMS on rootfs only.
+ These headers match the pinned Y700 kernel ABI and are installed under
+ /usr/src and /usr/lib/modules. They do not ship Image, DTB, or boot files.
+CTRL
+
+  cat > "$hdr_pkg/DEBIAN/postinst" <<POST
+#!/bin/sh
+set -e
+modroot="/usr/lib/modules/$release"
+install -d -m 0755 "\$modroot"
+ln -sfn "/usr/src/linux-headers-$release" "\$modroot/build"
+ln -sfn "/usr/src/linux-headers-$release" "\$modroot/source"
+# Intentionally do not run update-initramfs, depmod for boot, or grub.
+exit 0
+POST
+  chmod 0755 "$hdr_pkg/DEBIAN/postinst"
+
+  headers_deb="$OUTPUT_DIR/y700-daily-kernel-headers_${KERNEL_HEADERS_DEB_VERSION}_arm64.deb"
+  rm -f "$headers_deb"
+  dpkg-deb --root-owner-group --build "$hdr_pkg" "$headers_deb"
+  ci_log "headers deb: $headers_deb"
+}
+
 pkg="$work_dir/pkg/y700-daily-kernel-modules"
 install -d -m 0755 "$pkg/DEBIAN" "$pkg/usr/lib/modules"
 make_k INSTALL_MOD_PATH="$pkg/usr" INSTALL_MOD_STRIP=1 modules_install
@@ -218,7 +345,12 @@ for base in /usr/lib/modules /lib/modules; do
 done
 modroot="/usr/lib/modules/$release"
 if [ -d "\$modroot" ]; then
-	find "\$modroot" -type f -name '*.ko' ! -path '*/kernel/*' ! -path '*/extra/*' -delete
+	find "\$modroot" -type f -name '*.ko' \
+		! -path '*/kernel/*' \
+		! -path '*/extra/*' \
+		! -path '*/updates/*' \
+		! -path '*/weak-updates/*' \
+		-delete
 	find "\$modroot" -type f \\( -name '*.bak*' -o -name '*.pre-*' -o -name '*.orig' -o -name '*.rej' \\) -delete
 fi
 if command -v depmod >/dev/null 2>&1; then
@@ -231,6 +363,8 @@ chmod 0755 "$pkg/DEBIAN/postinst"
 deb="$OUTPUT_DIR/y700-daily-kernel-modules_${KERNEL_MODULES_DEB_VERSION}_arm64.deb"
 rm -f "$deb"
 dpkg-deb --root-owner-group --build "$pkg" "$deb"
+
+package_kernel_headers_deb
 
 art_dir="$work_dir/artifacts"
 mkdir -p "$art_dir"
@@ -245,6 +379,7 @@ kernel_release=$release
 kernel_abi_release=$KERNEL_ABI_RELEASE
 dtb_name=$DTB_NAME
 fragment=$(ci_abs_path "$KERNEL_FRAGMENT")
+headers_deb=$(basename "$headers_deb")
 INFO
 
 cp -a "$art_dir/Image" "$OUTPUT_DIR/Image"
@@ -255,8 +390,9 @@ cp -a "$art_dir/BUILD-INFO.txt" "$OUTPUT_DIR/kernel.BUILD-INFO.txt"
 tarball="$OUTPUT_DIR/y700-kernel-artifacts-${release}.tar.gz"
 tar -C "$art_dir" -czf "$tarball" Image "$DTB_NAME" kernel.config BUILD-INFO.txt
 
-(cd "$OUTPUT_DIR" && sha256sum "$(basename "$deb")" "$(basename "$tarball")" Image kernel.config "$DTB_NAME" kernel.BUILD-INFO.txt > SHA256SUMS.txt)
+(cd "$OUTPUT_DIR" && sha256sum "$(basename "$deb")" "$(basename "$headers_deb")" "$(basename "$tarball")" Image kernel.config "$DTB_NAME" kernel.BUILD-INFO.txt > SHA256SUMS.txt)
 
 ci_log "kernel build complete: $OUTPUT_DIR"
 ci_log "modules deb: $deb"
+ci_log "headers deb: $headers_deb"
 ci_log "artifacts: $tarball"

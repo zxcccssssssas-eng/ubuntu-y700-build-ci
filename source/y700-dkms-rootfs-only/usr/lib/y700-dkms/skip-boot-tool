@@ -1,0 +1,6 @@
+#!/bin/sh
+# Y700 DKMS/rootfs policy: the kernel Image, DTB and GRUB live on the FAT
+# boot partition. Never write initramfs, grub.cfg, or kernel images from
+# DKMS or kernel maintainer scripts.
+echo "y700-dkms: refusing boot/grub update ($(basename "$0")${*:+ $*})" >&2
+exit 0

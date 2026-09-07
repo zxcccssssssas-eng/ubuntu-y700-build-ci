@@ -63,7 +63,11 @@ Environment inputs:
   INSTALL_Y700_VIRTUALKEYBOARD
                               install Plasma/Qt virtual keyboard for login, lock screen and session, default: 1
   INSTALL_Y700_TUNED_PROFILES install SM8650 tuned-adm powersave/performance/balanced profiles, default: 1
-  KERNEL_MODULES_DEB_DIR     optional directory of rebuilt kernel module debs that replace archive modules
+  INSTALL_DKMS               install DKMS plus matching kernel headers on rootfs only, default: 1
+  INSTALL_AMNEZIAWG          install AmneziaWG DKMS module and awg tools on rootfs, default: 1
+  AMNEZIAWG_DEB_DIR          optional directory of AmneziaWG/DKMS policy debs
+  KERNEL_ABI_RELEASE         pinned kernel UTS release used by DKMS, default: 7.1.1-g5df8e852ea72
+  KERNEL_MODULES_DEB_DIR     optional directory of rebuilt kernel module/header debs that replace archive modules
   CLEAN_APT_CACHE            default: 1
   COMPRESS                   none|zstd|xz|7z, default: 7z
   CHUNK_SIZE                 optional 7z volume size; empty disables volumes
@@ -113,6 +117,9 @@ APPLY_Y700_FIRMWARE_FIXES=${APPLY_Y700_FIRMWARE_FIXES:-1}
 APPLY_Y700_AUDIO_POLICY_FIXES=${APPLY_Y700_AUDIO_POLICY_FIXES:-1}
 INSTALL_Y700_VIRTUALKEYBOARD=${INSTALL_Y700_VIRTUALKEYBOARD:-1}
 INSTALL_Y700_TUNED_PROFILES=${INSTALL_Y700_TUNED_PROFILES:-1}
+INSTALL_DKMS=${INSTALL_DKMS:-1}
+INSTALL_AMNEZIAWG=${INSTALL_AMNEZIAWG:-1}
+KERNEL_ABI_RELEASE=${KERNEL_ABI_RELEASE:-7.1.1-g5df8e852ea72}
 BUILD_TB321FU_GPU_SENSOR=${BUILD_TB321FU_GPU_SENSOR:-1}
 TB321FU_GPU_SENSOR_SOURCE_DIR=${TB321FU_GPU_SENSOR_SOURCE_DIR:-}
 INSTALL_GNOME_SNAPSHOT=${INSTALL_GNOME_SNAPSHOT:-1}
@@ -143,6 +150,12 @@ if ci_bool "$INSTALL_Y700_VIRTUALKEYBOARD"; then
 fi
 if ci_bool "$INSTALL_Y700_TUNED_PROFILES"; then
   PACKAGE_LIST="$PACKAGE_LIST tuned"
+fi
+if ci_bool "$INSTALL_AMNEZIAWG"; then
+  INSTALL_DKMS=1
+fi
+if ci_bool "$INSTALL_DKMS"; then
+  PACKAGE_LIST="$PACKAGE_LIST dkms build-essential dwarves libelf-dev python3 kmod"
 fi
 PACKAGE_LIST="$PACKAGE_LIST wireguard-tools iptables nftables iproute2"
 
@@ -446,6 +459,22 @@ CONF
 
   grep -q 'SM8650' "$root/usr/lib/tuned/profiles/balanced/tuned.conf" || ci_die "SM8650 balanced tuned profile missing"
   grep -q 'sm8650-apply.sh powersave' "$root/usr/lib/tuned/profiles/powersave/script.sh" || ci_die "SM8650 powersave tuned script missing"
+}
+
+apply_y700_dkms_rootfs_only() {
+  local root=$1
+  local src="$SCRIPT_DIR/../../source/y700-dkms-rootfs-only"
+
+  ci_log "installing DKMS rootfs-only boot/grub guards"
+
+  [ -f "$src/usr/lib/y700-dkms/skip-boot-tool" ] || ci_die "missing DKMS skip-boot-tool"
+  [ -f "$src/usr/lib/y700-dkms/protect-boot-tools.sh" ] || ci_die "missing DKMS protect-boot-tools.sh"
+  [ -f "$src/usr/lib/y700-dkms/install-pinned-module.sh" ] || ci_die "missing DKMS install-pinned-module.sh"
+
+  install -d -m 0755 "$root/usr/lib/y700-dkms"
+  install -m 0755 "$src/usr/lib/y700-dkms/skip-boot-tool" "$root/usr/lib/y700-dkms/skip-boot-tool"
+  install -m 0755 "$src/usr/lib/y700-dkms/protect-boot-tools.sh" "$root/usr/lib/y700-dkms/protect-boot-tools.sh"
+  install -m 0755 "$src/usr/lib/y700-dkms/install-pinned-module.sh" "$root/usr/lib/y700-dkms/install-pinned-module.sh"
 }
 
 apply_sddm_autologin() {
@@ -763,8 +792,20 @@ if [ -n "${APT_HTTP_PROXY:-}" ] || [ -n "${APT_HTTPS_PROXY:-}" ]; then
   fi
 fi
 
+if ci_bool_chroot "${INSTALL_DKMS:-0}"; then
+  if [ -x /usr/lib/y700-dkms/protect-boot-tools.sh ]; then
+    /usr/lib/y700-dkms/protect-boot-tools.sh
+  fi
+fi
+
 apt-get update
 apt-get install -y $PACKAGE_LIST
+
+if ci_bool_chroot "${INSTALL_DKMS:-0}"; then
+  if [ -x /usr/lib/y700-dkms/protect-boot-tools.sh ]; then
+    /usr/lib/y700-dkms/protect-boot-tools.sh
+  fi
+fi
 
 if ci_bool_chroot "$INSTALL_FIREFOX"; then
   firefox_version=$(dpkg-query -W -f='${Version}' firefox 2>/dev/null || true)
@@ -1010,6 +1051,36 @@ if compgen -G "/var/tmp/ci-debs/*.deb" >/dev/null; then
   dpkg -i --force-overwrite /var/tmp/ci-debs/*.deb || apt-get -f install -y
 fi
 
+if ci_bool_chroot "${INSTALL_DKMS:-0}"; then
+  if [ -x /usr/lib/y700-dkms/protect-boot-tools.sh ]; then
+    /usr/lib/y700-dkms/protect-boot-tools.sh
+  fi
+  dpkg-query -W -f='${Status}' dkms 2>/dev/null | grep -q 'install ok installed' || {
+    echo 'dkms is not installed despite INSTALL_DKMS=1' >&2
+    exit 1
+  }
+  if [ -d "/usr/lib/modules/${KERNEL_ABI_RELEASE}" ]; then
+    test -e "/usr/lib/modules/${KERNEL_ABI_RELEASE}/build" || {
+      echo "missing DKMS headers at /usr/lib/modules/${KERNEL_ABI_RELEASE}/build" >&2
+      exit 1
+    }
+  fi
+fi
+
+if ci_bool_chroot "${INSTALL_AMNEZIAWG:-0}"; then
+  [ -x /usr/lib/y700-dkms/install-pinned-module.sh ] || {
+    echo 'missing /usr/lib/y700-dkms/install-pinned-module.sh' >&2
+    exit 1
+  }
+  /usr/lib/y700-dkms/install-pinned-module.sh amneziawg 1.0.0 "${KERNEL_ABI_RELEASE}"
+  command -v awg >/dev/null 2>&1 || { echo 'awg is missing after AmneziaWG install' >&2; exit 1; }
+  command -v awg-quick >/dev/null 2>&1 || { echo 'awg-quick is missing after AmneziaWG install' >&2; exit 1; }
+  dpkg-query -W -f='${Status}' amneziawg-dkms 2>/dev/null | grep -q 'install ok installed' || {
+    echo 'amneziawg-dkms is not installed despite INSTALL_AMNEZIAWG=1' >&2
+    exit 1
+  }
+fi
+
 if ci_bool_chroot "${INSTALL_Y700_VIRTUALKEYBOARD:-1}"; then
   if [ -x /root/ci-rebuild-plasma-keyboard.sh ]; then
     bash /root/ci-rebuild-plasma-keyboard.sh
@@ -1089,11 +1160,33 @@ if [ -n "${KERNEL_MODULES_DEB_DIR:-}" ]; then
   mkdir -p "$rootfs_dir/var/tmp/ci-debs"
   ci_log "replacing kernel module debs from: $KERNEL_MODULES_DEB_DIR"
   find "$rootfs_dir/var/tmp/ci-debs" -maxdepth 1 -type f -name '*kernel-modules*.deb' -delete
-  find "$KERNEL_MODULES_DEB_DIR" -maxdepth 1 -type f -name '*.deb' -exec cp -a {} "$rootfs_dir/var/tmp/ci-debs/" \;
+  find "$KERNEL_MODULES_DEB_DIR" -maxdepth 1 -type f -name 'y700-daily-kernel-modules_*.deb' -exec cp -a {} "$rootfs_dir/var/tmp/ci-debs/" \;
+  if ci_bool "$INSTALL_DKMS"; then
+    find "$KERNEL_MODULES_DEB_DIR" -maxdepth 1 -type f -name 'y700-daily-kernel-headers_*.deb' -exec cp -a {} "$rootfs_dir/var/tmp/ci-debs/" \;
+  fi
+fi
+if [ -n "${AMNEZIAWG_DEB_DIR:-}" ]; then
+  mkdir -p "$rootfs_dir/var/tmp/ci-debs"
+  ci_log "including AmneziaWG/DKMS debs from: $AMNEZIAWG_DEB_DIR"
+  find "$AMNEZIAWG_DEB_DIR" -maxdepth 1 -type f -name '*.deb' -exec cp -a {} "$rootfs_dir/var/tmp/ci-debs/" \;
+fi
+if ci_bool "$INSTALL_DKMS"; then
+  find "$rootfs_dir/var/tmp/ci-debs" -maxdepth 1 -type f -name 'y700-daily-kernel-headers_*.deb' | grep -q . || \
+    ci_die "INSTALL_DKMS=1 requires y700-daily-kernel-headers in KERNEL_MODULES_DEB_DIR"
+fi
+if ci_bool "$INSTALL_AMNEZIAWG"; then
+  find "$rootfs_dir/var/tmp/ci-debs" -maxdepth 1 -type f -name 'amneziawg-dkms_*.deb' | grep -q . || \
+    ci_die "INSTALL_AMNEZIAWG=1 requires amneziawg-dkms in AMNEZIAWG_DEB_DIR"
+  find "$rootfs_dir/var/tmp/ci-debs" -maxdepth 1 -type f -name 'amneziawg-tools_*.deb' | grep -q . || \
+    ci_die "INSTALL_AMNEZIAWG=1 requires amneziawg-tools in AMNEZIAWG_DEB_DIR"
 fi
 
 if ci_bool "$INSTALL_FIREFOX"; then
   configure_mozilla_firefox_repo "$rootfs_dir"
+fi
+
+if ci_bool "$INSTALL_DKMS"; then
+  apply_y700_dkms_rootfs_only "$rootfs_dir"
 fi
 
 ci_log "provisioning rootfs"
@@ -1110,6 +1203,9 @@ chroot "$rootfs_dir" env -i \
   USER_SUDO_MODE="$USER_SUDO_MODE" \
   INSTALL_FIREFOX="$INSTALL_FIREFOX" \
   INSTALL_Y700_VIRTUALKEYBOARD="$INSTALL_Y700_VIRTUALKEYBOARD" \
+  INSTALL_DKMS="$INSTALL_DKMS" \
+  INSTALL_AMNEZIAWG="$INSTALL_AMNEZIAWG" \
+  KERNEL_ABI_RELEASE="$KERNEL_ABI_RELEASE" \
   DISABLE_SNAPD="$DISABLE_SNAPD" \
   TZ_REGION="$TZ_REGION" \
   LOCALES="$LOCALES" \
@@ -1196,6 +1292,10 @@ apply_y700_firmware_fixes=$APPLY_Y700_FIRMWARE_FIXES
 apply_y700_audio_policy_fixes=$APPLY_Y700_AUDIO_POLICY_FIXES
 install_y700_virtualkeyboard=$INSTALL_Y700_VIRTUALKEYBOARD
 install_y700_tuned_profiles=$INSTALL_Y700_TUNED_PROFILES
+install_dkms=$INSTALL_DKMS
+install_amneziawg=$INSTALL_AMNEZIAWG
+kernel_abi_release=$KERNEL_ABI_RELEASE
+amneziawg_deb_dir=${AMNEZIAWG_DEB_DIR:-}
 kernel_modules_deb_dir=${KERNEL_MODULES_DEB_DIR:-}
 INFO
 
