@@ -216,7 +216,7 @@ jobs:
           KERNEL_SOURCE_REF=5df8e852ea722929f5359a5ef28ebcec0c4443fd
           KERNEL_ABI_RELEASE=7.1.1-g5df8e852ea72
           KERNEL_ABI_LOCALVERSION=-g5df8e852ea72
-          KERNEL_MODULES_DEB_VERSION=0.1+ubuntu-features
+          KERNEL_MODULES_DEB_VERSION=0.1+ubuntu-features.1
           BOOTAA64_EFI_URL=
           QCOMRAMP_EFI_URL=
           QCOMRAMP_CFG_NAME=qcomramp.cfg
@@ -315,7 +315,7 @@ jobs:
             KERNEL_FRAGMENT="${KERNEL_FRAGMENT:-source/kernel/ubuntu-features.config}" \
             KERNEL_ABI_RELEASE="${KERNEL_ABI_RELEASE:-7.1.1-g5df8e852ea72}" \
             KERNEL_ABI_LOCALVERSION="${KERNEL_ABI_LOCALVERSION:--g5df8e852ea72}" \
-            KERNEL_MODULES_DEB_VERSION="${KERNEL_MODULES_DEB_VERSION:-0.1+ubuntu-features}" \
+            KERNEL_MODULES_DEB_VERSION="${KERNEL_MODULES_DEB_VERSION:-0.1+ubuntu-features.1}" \
             DTB_NAME="${DTB_NAME:-sm8650-lenovo-tb321fu.dtb}" \
             KERNEL_BUILD_JOBS="${KERNEL_BUILD_JOBS:-$(nproc)}" \
             bash scripts/ci/build-kernel-artifacts.sh
