@@ -28,6 +28,7 @@ Environment inputs:
   DTB_NAME                   default: sm8650-lenovo-tb321fu.dtb
   KERNEL_BUILD_JOBS          default: nproc
   KERNEL_MODULES_DEB_VERSION default: 0.1+ubuntu-features.1
+                             (also used for the single linux-headers deb)
 USAGE
 }
 
@@ -235,6 +236,67 @@ deb="$OUTPUT_DIR/y700-daily-kernel-modules_${KERNEL_MODULES_DEB_VERSION}_arm64.d
 rm -f "$deb"
 dpkg-deb --root-owner-group --build "$pkg" "$deb"
 
+# Single linux-headers deb for out-of-tree / DKMS builds against this ABI.
+# Debian/Ubuntu split this into common+generic; we keep one package so
+# /lib/modules/$release/build points at /usr/src/linux-headers-$release.
+ci_log "packaging kernel headers"
+hdr_script="$src/scripts/package/install-extmod-build"
+[ -f "$hdr_script" ] || ci_die "kernel tree missing scripts/package/install-extmod-build"
+hdr_pkg="$work_dir/pkg/linux-headers-$release"
+hdr_dest="$hdr_pkg/usr/src/linux-headers-$release"
+install -d -m 0755 "$hdr_dest" "$hdr_pkg/DEBIAN" "$hdr_pkg/usr/lib/modules/$release"
+(
+  cd "$build"
+  srctree="$src" objtree="$build" SRCARCH="$ARCH_NAME" ARCH="$ARCH_NAME" \
+    CC="${CROSS_COMPILE}gcc" HOSTCC="${HOSTCC:-gcc}" MAKE=make \
+    sh "$hdr_script" "$hdr_dest"
+)
+cp -a "$build/.config" "$hdr_dest/.config"
+ln -s "/usr/src/linux-headers-$release" "$hdr_pkg/usr/lib/modules/$release/build"
+[ -f "$hdr_dest/Makefile" ] || ci_die "headers tree missing Makefile"
+[ -f "$hdr_dest/Module.symvers" ] || ci_die "headers tree missing Module.symvers"
+[ -f "$hdr_dest/include/generated/autoconf.h" ] || ci_die "headers tree missing autoconf.h"
+[ -f "$hdr_dest/include/config/kernel.release" ] || ci_die "headers tree missing kernel.release"
+hdr_release=$(cat "$hdr_dest/include/config/kernel.release")
+[ "$hdr_release" = "$release" ] || \
+  ci_die "headers kernel.release $hdr_release does not match $release"
+
+cat > "$hdr_pkg/DEBIAN/control" <<CTRL
+Package: linux-headers-$release
+Version: $KERNEL_MODULES_DEB_VERSION
+Section: devel
+Priority: optional
+Architecture: arm64
+Maintainer: Y700 local build <root@localhost>
+Provides: linux-headers, linux-headers-arm64, y700-daily-kernel-headers
+Replaces: linux-headers-$release
+Description: Kernel headers for $release (Y700 / TB321FU)
+ Single package with the files needed to build out-of-tree modules
+ against this kernel (equivalent to Ubuntu linux-headers-common +
+ linux-headers-generic). Installs /usr/src/linux-headers-$release
+ and /lib/modules/$release/build.
+CTRL
+
+cat > "$hdr_pkg/DEBIAN/postinst" <<POST
+#!/bin/sh
+set -e
+hdr="/usr/src/linux-headers-$release"
+mod="/usr/lib/modules/$release"
+[ -d "\$hdr" ] || exit 0
+install -d -m 0755 "\$mod"
+ln -sfn "\$hdr" "\$mod/build"
+if [ -d /lib/modules ] && [ ! -L /lib/modules ]; then
+	install -d -m 0755 "/lib/modules/$release"
+	ln -sfn "\$hdr" "/lib/modules/$release/build"
+fi
+exit 0
+POST
+chmod 0755 "$hdr_pkg/DEBIAN/postinst"
+
+hdr_deb="$OUTPUT_DIR/linux-headers-${release}_${KERNEL_MODULES_DEB_VERSION}_arm64.deb"
+rm -f "$hdr_deb"
+dpkg-deb --root-owner-group --build "$hdr_pkg" "$hdr_deb"
+
 art_dir="$work_dir/artifacts"
 mkdir -p "$art_dir"
 cp -a "$image" "$art_dir/Image"
@@ -248,6 +310,7 @@ kernel_release=$release
 kernel_abi_release=$KERNEL_ABI_RELEASE
 dtb_name=$DTB_NAME
 fragment=$(ci_abs_path "$KERNEL_FRAGMENT")
+headers_deb=$(basename "$hdr_deb")
 INFO
 
 cp -a "$art_dir/Image" "$OUTPUT_DIR/Image"
@@ -258,8 +321,9 @@ cp -a "$art_dir/BUILD-INFO.txt" "$OUTPUT_DIR/kernel.BUILD-INFO.txt"
 tarball="$OUTPUT_DIR/y700-kernel-artifacts-${release}.tar.gz"
 tar -C "$art_dir" -czf "$tarball" Image "$DTB_NAME" kernel.config BUILD-INFO.txt
 
-(cd "$OUTPUT_DIR" && sha256sum "$(basename "$deb")" "$(basename "$tarball")" Image kernel.config "$DTB_NAME" kernel.BUILD-INFO.txt > SHA256SUMS.txt)
+(cd "$OUTPUT_DIR" && sha256sum "$(basename "$deb")" "$(basename "$hdr_deb")" "$(basename "$tarball")" Image kernel.config "$DTB_NAME" kernel.BUILD-INFO.txt > SHA256SUMS.txt)
 
 ci_log "kernel build complete: $OUTPUT_DIR"
 ci_log "modules deb: $deb"
+ci_log "headers deb: $hdr_deb"
 ci_log "artifacts: $tarball"

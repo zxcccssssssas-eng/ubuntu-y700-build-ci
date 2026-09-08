@@ -63,7 +63,7 @@ Environment inputs:
   INSTALL_Y700_VIRTUALKEYBOARD
                               install Plasma/Qt virtual keyboard for login, lock screen and session, default: 1
   INSTALL_Y700_TUNED_PROFILES install SM8650 tuned-adm powersave/performance/balanced profiles, default: 1
-  KERNEL_MODULES_DEB_DIR     optional directory of rebuilt kernel module debs that replace archive modules
+  KERNEL_MODULES_DEB_DIR     optional directory of rebuilt kernel module and headers debs that replace archive modules
   CLEAN_APT_CACHE            default: 1
   COMPRESS                   none|zstd|xz|7z, default: 7z
   CHUNK_SIZE                 optional 7z volume size; empty disables volumes
@@ -144,7 +144,7 @@ fi
 if ci_bool "$INSTALL_Y700_TUNED_PROFILES"; then
   PACKAGE_LIST="$PACKAGE_LIST tuned"
 fi
-PACKAGE_LIST="$PACKAGE_LIST wireguard-tools iptables nftables iproute2"
+PACKAGE_LIST="$PACKAGE_LIST wireguard-tools iptables nftables iproute2 build-essential"
 
 configure_mozilla_firefox_repo() {
   local root=$1
@@ -1099,9 +1099,11 @@ if [ -n "${CAMERA_STACK_DEB_DIR:-}" ]; then
 fi
 if [ -n "${KERNEL_MODULES_DEB_DIR:-}" ]; then
   mkdir -p "$rootfs_dir/var/tmp/ci-debs"
-  ci_log "replacing kernel module debs from: $KERNEL_MODULES_DEB_DIR"
+  ci_log "replacing kernel module and headers debs from: $KERNEL_MODULES_DEB_DIR"
   find "$rootfs_dir/var/tmp/ci-debs" -maxdepth 1 -type f -name '*kernel-modules*.deb' -delete
   find "$KERNEL_MODULES_DEB_DIR" -maxdepth 1 -type f -name '*.deb' -exec cp -a {} "$rootfs_dir/var/tmp/ci-debs/" \;
+  find "$rootfs_dir/var/tmp/ci-debs" -maxdepth 1 -type f -name 'linux-headers-*.deb' | grep -q . || \
+    ci_die "KERNEL_MODULES_DEB_DIR has no linux-headers-*.deb"
 fi
 
 if ci_bool "$INSTALL_FIREFOX"; then
