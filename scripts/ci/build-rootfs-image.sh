@@ -558,6 +558,9 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
+. /root/ci-apt-retry.sh
+apt_configure_retries
+
 ci_bool_chroot()
 {
   case "${1:-}" in
@@ -593,8 +596,8 @@ for pkg in $build_deps; do
   fi
 done
 
-apt-get update
-apt-get install -y --no-install-recommends $build_deps
+apt_retry apt-get update
+apt_retry apt-get install -y --no-install-recommends $build_deps
 
 cmake -S "$src" -B "$build" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_INSTALL_PREFIX=/usr
 cmake --build "$build" -j"${TB321FU_GPU_SENSOR_BUILD_JOBS:-2}"
@@ -618,13 +621,14 @@ if [ -n "$new_build_deps" ]; then
 fi
 apt-get clean
 rm -rf /var/lib/apt/lists/*
-rm -f /etc/apt/apt.conf.d/99ci-proxy
+rm -f /etc/apt/apt.conf.d/99ci-proxy /etc/apt/apt.conf.d/99ci-retries
 
 test -f "$plugin"
 test ! -e "$stock"
 test ! -e "$src"
 test ! -e "$build"
 GPU_SENSOR_BUILD
+  install -m 0644 "$SCRIPT_DIR/apt-retry.sh" "$root/root/ci-apt-retry.sh"
   chmod +x "$root/root/ci-build-tb321fu-gpu-sensor.sh"
 
   local gpu_resolv_backup="$work_dir/gpu-sensor-resolv.conf.original"
@@ -666,7 +670,7 @@ GPU_SENSOR_BUILD
     ln -s ../run/systemd/resolve/stub-resolv.conf "$root/etc/resolv.conf"
   fi
 
-  rm -f "$root/root/ci-build-tb321fu-gpu-sensor.sh"
+  rm -f "$root/root/ci-build-tb321fu-gpu-sensor.sh" "$root/root/ci-apt-retry.sh"
   [ -f "$root/$plugin_rel" ] || ci_die "TB321FU GPU sensor plugin missing after build: /$plugin_rel"
   [ ! -e "$root/$stock_plugin_rel" ] || ci_die "stock KSystemStats GPU plugin still enabled: /$stock_plugin_rel"
   [ -f "$root/$disabled_stock_plugin_rel" ] || ci_die "disabled stock KSystemStats GPU plugin missing: /$disabled_stock_plugin_rel"
@@ -756,6 +760,9 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
+. /root/ci-apt-retry.sh
+apt_configure_retries
+
 ci_bool_chroot()
 {
   case "${1:-}" in
@@ -775,8 +782,8 @@ if [ -n "${APT_HTTP_PROXY:-}" ] || [ -n "${APT_HTTPS_PROXY:-}" ]; then
   fi
 fi
 
-apt-get update
-apt-get install -y $PACKAGE_LIST
+apt_retry apt-get update
+apt_retry apt-get install -y $PACKAGE_LIST
 
 if ci_bool_chroot "$INSTALL_FIREFOX"; then
   firefox_version=$(dpkg-query -W -f='${Version}' firefox 2>/dev/null || true)
@@ -1019,7 +1026,7 @@ locale-gen || true
 update-locale LANG="$LANG_NAME" || true
 
 if compgen -G "/var/tmp/ci-debs/*.deb" >/dev/null; then
-  dpkg -i --force-overwrite /var/tmp/ci-debs/*.deb || apt-get -f install -y
+  dpkg -i --force-overwrite /var/tmp/ci-debs/*.deb || apt_retry apt-get -f install -y
 fi
 
 if ci_bool_chroot "${INSTALL_Y700_VIRTUALKEYBOARD:-1}"; then
@@ -1052,13 +1059,14 @@ if [ "$CLEAN_APT_CACHE" = 1 ]; then
   apt-get clean
   rm -rf /var/lib/apt/lists/*
 fi
-rm -f /etc/apt/apt.conf.d/99ci-proxy
+rm -f /etc/apt/apt.conf.d/99ci-proxy /etc/apt/apt.conf.d/99ci-retries
 
 rm -f /etc/machine-id
 touch /etc/machine-id
 rm -f /root/.bash_history "/home/${DEFAULT_USER_NAME}/.bash_history"
-rm -rf /tmp/* /var/tmp/ci-debs /root/ci-provision.sh /root/ci-rebuild-plasma-keyboard.sh /root/patch-plasma-keyboard-modifiers.py
+rm -rf /tmp/* /var/tmp/ci-debs /root/ci-provision.sh /root/ci-rebuild-plasma-keyboard.sh /root/patch-plasma-keyboard-modifiers.py /root/ci-apt-retry.sh
 PROVISION
+install -m 0644 "$SCRIPT_DIR/apt-retry.sh" "$rootfs_dir/root/ci-apt-retry.sh"
 chmod +x "$rootfs_dir/root/ci-provision.sh"
 
 if ci_bool "$INSTALL_Y700_VIRTUALKEYBOARD"; then

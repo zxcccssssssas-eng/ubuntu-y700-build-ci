@@ -13,6 +13,9 @@ patcher=${PLASMA_KEYBOARD_PATCHER:-/root/patch-plasma-keyboard-modifiers.py}
 
 export DEBIAN_FRONTEND=noninteractive
 
+. /root/ci-apt-retry.sh
+apt_configure_retries
+
 if [ -n "${APT_HTTP_PROXY:-}" ] || [ -n "${APT_HTTPS_PROXY:-}" ]; then
   mkdir -p /etc/apt/apt.conf.d
   : > /etc/apt/apt.conf.d/99ci-proxy-keyboard
@@ -28,8 +31,8 @@ if [ -f /etc/apt/sources.list ] && ! grep -qE '^deb-src ' /etc/apt/sources.list;
   sed -n 's/^deb /deb-src /p' /etc/apt/sources.list >> /etc/apt/sources.list
 fi
 
-apt-get update
-apt-get install -y --no-install-recommends python3 dpkg-dev devscripts quilt fakeroot
+apt_retry apt-get update
+apt_retry apt-get install -y --no-install-recommends python3 dpkg-dev devscripts quilt fakeroot
 
 srcpkg=$(dpkg-query -W -f='${source:Package}' plasma-keyboard 2>/dev/null || true)
 [ -n "$srcpkg" ] || srcpkg=plasma-keyboard
@@ -38,8 +41,8 @@ work=/tmp/plasma-keyboard-src
 rm -rf "$work"
 mkdir -p "$work"
 cd "$work"
-apt-get source -y "$srcpkg"
-apt-get build-dep -y "$srcpkg"
+apt_retry apt-get source -y "$srcpkg"
+apt_retry apt-get build-dep -y "$srcpkg"
 
 src_dir=$(find "$work" -mindepth 1 -maxdepth 1 -type d ! -name '.*' | head -n1)
 [ -n "$src_dir" ] || { echo 'plasma-keyboard source directory not found' >&2; exit 1; }
@@ -55,7 +58,7 @@ DEB_BUILD_OPTIONS="nocheck parallel=${PLASMA_KEYBOARD_BUILD_JOBS:-2}" dpkg-build
 
 deb=$(find "$work" -maxdepth 1 -type f -name 'plasma-keyboard_*.deb' ! -name '*dbgsym*' | head -n1)
 [ -n "$deb" ] || { echo 'rebuilt plasma-keyboard deb not found' >&2; exit 1; }
-dpkg -i "$deb" || apt-get -f install -y
+dpkg -i "$deb" || apt_retry apt-get -f install -y
 
 python3 - <<'PY'
 from pathlib import Path
