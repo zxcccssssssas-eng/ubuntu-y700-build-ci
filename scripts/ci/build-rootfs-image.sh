@@ -64,8 +64,8 @@ Environment inputs:
                               install Plasma/Qt virtual keyboard for login, lock screen and session, default: 1
   INSTALL_Y700_TUNED_PROFILES install SM8650 tuned-adm powersave/performance/balanced profiles, default: 1
   INSTALL_DKMS               install DKMS plus matching kernel headers on rootfs only, default: 1
-  INSTALL_AMNEZIAWG          install AmneziaWG DKMS module and awg tools on rootfs, default: 1
-  AMNEZIAWG_DEB_DIR          optional directory of AmneziaWG/DKMS policy debs
+  INSTALL_AMNEZIAWG          install the combined AmneziaWG DKMS+tools deb on rootfs, default: 1
+  AMNEZIAWG_DEB_DIR          optional directory containing amneziawg-dkms_*.deb
   KERNEL_ABI_RELEASE         pinned kernel UTS release used by DKMS, default: 7.1.1-g5df8e852ea72
   KERNEL_MODULES_DEB_DIR     optional directory of rebuilt kernel module/header debs that replace archive modules
   CLEAN_APT_CACHE            default: 1
@@ -1167,8 +1167,8 @@ if [ -n "${KERNEL_MODULES_DEB_DIR:-}" ]; then
 fi
 if [ -n "${AMNEZIAWG_DEB_DIR:-}" ]; then
   mkdir -p "$rootfs_dir/var/tmp/ci-debs"
-  ci_log "including AmneziaWG/DKMS debs from: $AMNEZIAWG_DEB_DIR"
-  find "$AMNEZIAWG_DEB_DIR" -maxdepth 1 -type f -name '*.deb' -exec cp -a {} "$rootfs_dir/var/tmp/ci-debs/" \;
+  ci_log "including AmneziaWG combined deb from: $AMNEZIAWG_DEB_DIR"
+  find "$AMNEZIAWG_DEB_DIR" -maxdepth 1 -type f -name 'amneziawg-dkms_*.deb' -exec cp -a {} "$rootfs_dir/var/tmp/ci-debs/" \;
 fi
 if ci_bool "$INSTALL_DKMS"; then
   find "$rootfs_dir/var/tmp/ci-debs" -maxdepth 1 -type f -name 'y700-daily-kernel-headers_*.deb' | grep -q . || \
@@ -1177,8 +1177,6 @@ fi
 if ci_bool "$INSTALL_AMNEZIAWG"; then
   find "$rootfs_dir/var/tmp/ci-debs" -maxdepth 1 -type f -name 'amneziawg-dkms_*.deb' | grep -q . || \
     ci_die "INSTALL_AMNEZIAWG=1 requires amneziawg-dkms in AMNEZIAWG_DEB_DIR"
-  find "$rootfs_dir/var/tmp/ci-debs" -maxdepth 1 -type f -name 'amneziawg-tools_*.deb' | grep -q . || \
-    ci_die "INSTALL_AMNEZIAWG=1 requires amneziawg-tools in AMNEZIAWG_DEB_DIR"
 fi
 
 if ci_bool "$INSTALL_FIREFOX"; then

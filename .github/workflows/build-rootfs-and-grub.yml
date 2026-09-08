@@ -333,7 +333,7 @@ jobs:
             echo "KERNEL_MODULES_DEB_DIR=$PWD/out/ci-kernel"
           } >> "$GITHUB_ENV"
 
-      - name: Build AmneziaWG DKMS and tools
+      - name: Build AmneziaWG DKMS deb
         run: |
           set -euo pipefail
           if [ "${INSTALL_AMNEZIAWG:-1}" != "1" ]; then

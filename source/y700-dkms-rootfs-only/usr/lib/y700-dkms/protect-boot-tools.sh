@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-PACKAGE_NAME=y700-dkms-rootfs-only
+PACKAGE_NAME=amneziawg-dkms
 SKIP_TOOL=/usr/lib/y700-dkms/skip-boot-tool
 
 log() {

@@ -10,9 +10,12 @@ usage() {
   cat <<USAGE
 Usage: $(basename "$0")
 
-Build AmneziaWG DKMS source, userspace tools, and the rootfs-only DKMS policy
-debs. The kernel module is compiled against the pinned Y700 headers and
-installed only under /lib/modules/<abi>/updates on rootfs.
+Build a single amneziawg-dkms .deb: DKMS source, a prebuilt amneziawg.ko for
+the pinned Y700 ABI, awg/awg-quick, and rootfs-only boot/grub guards. The
+module is installed only under /lib/modules/<abi>/updates. The package never
+runs update-initramfs, grub-install, or other boot-partition writers.
+
+Kernel headers stay in y700-daily-kernel-headers (built separately).
 
 Environment inputs:
   OUTPUT_DIR                 default: out/amneziawg-debs
@@ -23,9 +26,7 @@ Environment inputs:
   AMNEZIAWG_MODULE_REF       git commit, default: 4569c4c67f3a57414969260cafbbd04694fbaae0
   AMNEZIAWG_TOOLS_REPO       default: https://github.com/amnezia-vpn/amneziawg-tools
   AMNEZIAWG_TOOLS_REF        git commit, default: ee0f0a9aa34ff0a0da4b3433b9512781cfe02843
-  AMNEZIAWG_DKMS_VERSION     Debian version, default: 1.0.0+y700.1
-  AMNEZIAWG_TOOLS_VERSION    Debian version, default: 1.0.20260812+y700
-  AMNEZIAWG_POLICY_VERSION   Debian version, default: 1.0
+  AMNEZIAWG_DKMS_VERSION     Debian version, default: 1.0.0+y700.2
 USAGE
 }
 
@@ -51,9 +52,7 @@ AMNEZIAWG_MODULE_REPO=${AMNEZIAWG_MODULE_REPO:-https://github.com/amnezia-vpn/am
 AMNEZIAWG_MODULE_REF=${AMNEZIAWG_MODULE_REF:-4569c4c67f3a57414969260cafbbd04694fbaae0}
 AMNEZIAWG_TOOLS_REPO=${AMNEZIAWG_TOOLS_REPO:-https://github.com/amnezia-vpn/amneziawg-tools}
 AMNEZIAWG_TOOLS_REF=${AMNEZIAWG_TOOLS_REF:-ee0f0a9aa34ff0a0da4b3433b9512781cfe02843}
-AMNEZIAWG_DKMS_VERSION=${AMNEZIAWG_DKMS_VERSION:-1.0.0+y700.1}
-AMNEZIAWG_TOOLS_VERSION=${AMNEZIAWG_TOOLS_VERSION:-1.0.20260812+y700}
-AMNEZIAWG_POLICY_VERSION=${AMNEZIAWG_POLICY_VERSION:-1.0}
+AMNEZIAWG_DKMS_VERSION=${AMNEZIAWG_DKMS_VERSION:-1.0.0+y700.2}
 AMNEZIAWG_DKMS_PKG_VERSION=${AMNEZIAWG_DKMS_PKG_VERSION:-1.0.0}
 
 mkdir -p "$OUTPUT_DIR"
@@ -112,51 +111,25 @@ grep -q 'REMAKE_INITRD' "$dkms_conf_src" && ci_die "source dkms.conf must not se
 grep -q 'DEST_MODULE_LOCATION\[0\]="/updates"' "$dkms_conf_src" || \
   ci_die "source dkms.conf must install into /updates (rootfs module tree)"
 
-# Policy package: wrappers live on rootfs and divert boot/grub tools.
 policy_src="$REPO_ROOT/source/y700-dkms-rootfs-only"
-policy_pkg="$work_dir/pkg/y700-dkms-rootfs-only"
-rm -rf "$policy_pkg"
-install -d -m 0755 "$policy_pkg/DEBIAN" "$policy_pkg/usr/lib/y700-dkms"
-rsync -a "$policy_src/usr/lib/y700-dkms/" "$policy_pkg/usr/lib/y700-dkms/"
-chmod 0755 \
-  "$policy_pkg/usr/lib/y700-dkms/skip-boot-tool" \
-  "$policy_pkg/usr/lib/y700-dkms/protect-boot-tools.sh" \
-  "$policy_pkg/usr/lib/y700-dkms/install-pinned-module.sh"
+[ -x "$policy_src/usr/lib/y700-dkms/skip-boot-tool" ] || ci_die "missing skip-boot-tool"
+[ -x "$policy_src/usr/lib/y700-dkms/protect-boot-tools.sh" ] || ci_die "missing protect-boot-tools.sh"
+[ -x "$policy_src/usr/lib/y700-dkms/install-pinned-module.sh" ] || ci_die "missing install-pinned-module.sh"
+grep -q '^PACKAGE_NAME=amneziawg-dkms$' "$policy_src/usr/lib/y700-dkms/protect-boot-tools.sh" || \
+  ci_die "boot-tool diverts must be owned by amneziawg-dkms"
 
-cat > "$policy_pkg/DEBIAN/control" <<CTRL
-Package: y700-dkms-rootfs-only
-Version: $AMNEZIAWG_POLICY_VERSION
-Section: admin
-Priority: optional
-Architecture: all
-Maintainer: Y700 local build <root@localhost>
-Depends: dkms
-Description: Keep DKMS on the Y700 rootfs module tree.
- Diverts update-initramfs and GRUB tools so DKMS cannot rewrite the FAT
- boot/GRUB partition. Modules stay under /lib/modules on rootfs.
-CTRL
-
-cat > "$policy_pkg/DEBIAN/postinst" <<'POST'
-#!/bin/sh
-set -e
-if [ -x /usr/lib/y700-dkms/protect-boot-tools.sh ]; then
-	/usr/lib/y700-dkms/protect-boot-tools.sh
-fi
-exit 0
-POST
-chmod 0755 "$policy_pkg/DEBIAN/postinst"
-
-policy_deb="$OUTPUT_DIR/y700-dkms-rootfs-only_${AMNEZIAWG_POLICY_VERSION}_all.deb"
-rm -f "$policy_deb"
-dpkg-deb --root-owner-group --build "$policy_pkg" "$policy_deb"
-
-# DKMS source package plus a prebuilt .ko for the pinned ABI.
-dkms_pkg="$work_dir/pkg/amneziawg-dkms"
-dkms_src_dir="$dkms_pkg/usr/src/amneziawg-$AMNEZIAWG_DKMS_PKG_VERSION"
-rm -rf "$dkms_pkg"
-install -d -m 0755 "$dkms_src_dir" "$dkms_pkg/DEBIAN" \
-  "$dkms_pkg/usr/lib/modules/$KERNEL_ABI_RELEASE/updates" \
-  "$dkms_pkg/etc/modules-load.d"
+# Single package: DKMS source, prebuilt .ko, userspace tools, boot/grub guards.
+pkg="$work_dir/pkg/amneziawg-dkms"
+dkms_src_dir="$pkg/usr/src/amneziawg-$AMNEZIAWG_DKMS_PKG_VERSION"
+rm -rf "$pkg"
+install -d -m 0755 "$dkms_src_dir" "$pkg/DEBIAN" \
+  "$pkg/usr/lib/modules/$KERNEL_ABI_RELEASE/updates" \
+  "$pkg/usr/lib/y700-dkms" \
+  "$pkg/etc/modules-load.d" \
+  "$pkg/usr/bin" \
+  "$pkg/usr/lib/systemd/system" \
+  "$pkg/usr/share/bash-completion/completions" \
+  "$pkg/etc/amnezia/amneziawg"
 
 rsync -a \
   --exclude '*.ko' --exclude '*.ko.*' --exclude '*.o' --exclude '*.mod.c' \
@@ -170,72 +143,90 @@ grep -q 'REMAKE_INITRD' "$dkms_src_dir/dkms.conf" && ci_die "packaged dkms.conf 
 grep -q "BUILD_EXCLUSIVE_KERNEL=\"^${abi_regex}\$\"" "$dkms_src_dir/dkms.conf" || \
   ci_die "packaged dkms.conf is not pinned to ABI $KERNEL_ABI_RELEASE"
 
-install -m 0644 "$ko" "$dkms_pkg/usr/lib/modules/$KERNEL_ABI_RELEASE/updates/amneziawg.ko"
-printf 'amneziawg\n' > "$dkms_pkg/etc/modules-load.d/amneziawg.conf"
-chmod 0644 "$dkms_pkg/etc/modules-load.d/amneziawg.conf"
+install -m 0644 "$ko" "$pkg/usr/lib/modules/$KERNEL_ABI_RELEASE/updates/amneziawg.ko"
+printf 'amneziawg\n' > "$pkg/etc/modules-load.d/amneziawg.conf"
+chmod 0644 "$pkg/etc/modules-load.d/amneziawg.conf"
 
-cat > "$dkms_pkg/DEBIAN/control" <<CTRL
+rsync -a "$policy_src/usr/lib/y700-dkms/" "$pkg/usr/lib/y700-dkms/"
+chmod 0755 \
+  "$pkg/usr/lib/y700-dkms/skip-boot-tool" \
+  "$pkg/usr/lib/y700-dkms/protect-boot-tools.sh" \
+  "$pkg/usr/lib/y700-dkms/install-pinned-module.sh"
+
+ci_log "building amneziawg-tools into amneziawg-dkms"
+make -C "$work_dir/amneziawg-tools/src" clean || true
+make -C "$work_dir/amneziawg-tools/src" \
+  WITH_WGQUICK=yes WITH_BASHCOMPLETION=yes WITH_SYSTEMDUNITS=yes \
+  PREFIX=/usr SYSCONFDIR=/etc DESTDIR="$pkg" \
+  BASHCOMPDIR=/usr/share/bash-completion/completions \
+  SYSTEMDUNITDIR=/usr/lib/systemd/system \
+  install
+[ -x "$pkg/usr/bin/awg" ] || ci_die "amneziawg-tools did not install /usr/bin/awg"
+[ -x "$pkg/usr/bin/awg-quick" ] || ci_die "amneziawg-tools did not install /usr/bin/awg-quick"
+
+cat > "$pkg/DEBIAN/control" <<CTRL
 Package: amneziawg-dkms
 Version: $AMNEZIAWG_DKMS_VERSION
 Section: kernel
 Priority: optional
 Architecture: arm64
 Maintainer: Y700 local build <root@localhost>
-Depends: dkms, y700-daily-kernel-headers, y700-dkms-rootfs-only
-Description: AmneziaWG kernel module for the pinned Y700 kernel ABI.
- Ships DKMS source and a prebuilt amneziawg.ko under
- /usr/lib/modules/$KERNEL_ABI_RELEASE/updates. Does not touch /boot or GRUB.
+Depends: dkms, y700-daily-kernel-headers, iproute2
+Recommends: iptables | nftables
+Provides: amneziawg-tools, y700-dkms-rootfs-only
+Replaces: amneziawg-tools, y700-dkms-rootfs-only
+Conflicts: amneziawg-tools, y700-dkms-rootfs-only
+Description: AmneziaWG DKMS module and tools for the pinned Y700 kernel ABI.
+ Ships DKMS source, a prebuilt amneziawg.ko under
+ /usr/lib/modules/$KERNEL_ABI_RELEASE/updates, awg/awg-quick, and boot/grub
+ tool diverts so DKMS cannot rewrite the FAT boot partition. Does not run
+ update-initramfs or grub.
 CTRL
 
-cat > "$dkms_pkg/DEBIAN/postinst" <<POST
+cat > "$pkg/DEBIAN/postinst" <<POST
 #!/bin/sh
 set -e
 current_release="$KERNEL_ABI_RELEASE"
-if command -v depmod >/dev/null 2>&1; then
-	depmod "\$current_release" || true
-fi
-if command -v dkms >/dev/null 2>&1 && [ -d /usr/src/amneziawg-$AMNEZIAWG_DKMS_PKG_VERSION ]; then
-	dkms add -m amneziawg -v $AMNEZIAWG_DKMS_PKG_VERSION >/dev/null 2>&1 || true
+dkms_version="$AMNEZIAWG_DKMS_PKG_VERSION"
+if [ "\$1" = configure ]; then
+	if [ -x /usr/lib/y700-dkms/protect-boot-tools.sh ]; then
+		/usr/lib/y700-dkms/protect-boot-tools.sh
+	fi
+	if command -v depmod >/dev/null 2>&1; then
+		depmod "\$current_release" || true
+	fi
+	# Register source only. Do not compile against the host uname -r
+	# (chroot/builder ABI is not the tablet ABI). Rootfs provision installs
+	# the pinned module with install-pinned-module.sh.
+	if command -v dkms >/dev/null 2>&1 && [ -d /usr/src/amneziawg-\$dkms_version ]; then
+		dkms add -m amneziawg -v "\$dkms_version" >/dev/null 2>&1 || true
+	fi
 fi
 exit 0
 POST
-chmod 0755 "$dkms_pkg/DEBIAN/postinst"
+chmod 0755 "$pkg/DEBIAN/postinst"
 
+cat > "$pkg/DEBIAN/prerm" <<PRERM
+#!/bin/sh
+set -e
+dkms_version="$AMNEZIAWG_DKMS_PKG_VERSION"
+if [ "\$1" = remove ] || [ "\$1" = deconfigure ]; then
+	if command -v dkms >/dev/null 2>&1; then
+		dkms remove -m amneziawg -v "\$dkms_version" --all >/dev/null 2>&1 || true
+	fi
+fi
+exit 0
+PRERM
+chmod 0755 "$pkg/DEBIAN/prerm"
+
+# Drop leftover split packages from earlier builds of this output dir.
+rm -f "$OUTPUT_DIR"/y700-dkms-rootfs-only_*.deb "$OUTPUT_DIR"/amneziawg-tools_*.deb
 dkms_deb="$OUTPUT_DIR/amneziawg-dkms_${AMNEZIAWG_DKMS_VERSION}_arm64.deb"
 rm -f "$dkms_deb"
-dpkg-deb --root-owner-group --build "$dkms_pkg" "$dkms_deb"
+dpkg-deb --root-owner-group --build "$pkg" "$dkms_deb"
 
-# Userspace tools: awg / awg-quick.
-tools_pkg="$work_dir/pkg/amneziawg-tools"
-rm -rf "$tools_pkg"
-install -d -m 0755 "$tools_pkg/DEBIAN" "$tools_pkg/usr/bin" "$tools_pkg/usr/lib/systemd/system" \
-  "$tools_pkg/usr/share/bash-completion/completions" "$tools_pkg/etc/amnezia/amneziawg"
-ci_log "building amneziawg-tools"
-make -C "$work_dir/amneziawg-tools/src" clean || true
-make -C "$work_dir/amneziawg-tools/src" \
-  WITH_WGQUICK=yes WITH_BASHCOMPLETION=yes WITH_SYSTEMDUNITS=yes \
-  PREFIX=/usr SYSCONFDIR=/etc DESTDIR="$tools_pkg" \
-  BASHCOMPDIR=/usr/share/bash-completion/completions \
-  SYSTEMDUNITDIR=/usr/lib/systemd/system \
-  install
-[ -x "$tools_pkg/usr/bin/awg" ] || ci_die "amneziawg-tools did not install /usr/bin/awg"
-[ -x "$tools_pkg/usr/bin/awg-quick" ] || ci_die "amneziawg-tools did not install /usr/bin/awg-quick"
-
-cat > "$tools_pkg/DEBIAN/control" <<CTRL
-Package: amneziawg-tools
-Version: $AMNEZIAWG_TOOLS_VERSION
-Section: net
-Priority: optional
-Architecture: arm64
-Maintainer: Y700 local build <root@localhost>
-Depends: iproute2
-Recommends: amneziawg-dkms, iptables | nftables
-Description: AmneziaWG userspace tools (awg, awg-quick) for Y700.
-CTRL
-
-tools_deb="$OUTPUT_DIR/amneziawg-tools_${AMNEZIAWG_TOOLS_VERSION}_arm64.deb"
-rm -f "$tools_deb"
-dpkg-deb --root-owner-group --build "$tools_pkg" "$tools_deb"
+deb_count=$(find "$OUTPUT_DIR" -maxdepth 1 -type f -name '*.deb' | wc -l)
+[ "$deb_count" -eq 1 ] || ci_die "expected a single amneziawg-dkms deb in $OUTPUT_DIR, found $deb_count"
 
 cat > "$OUTPUT_DIR/BUILD-INFO.txt" <<INFO
 generated=$(date -u -Iseconds)
@@ -246,17 +237,16 @@ amneziawg_module_ref=$AMNEZIAWG_MODULE_REF
 amneziawg_tools_repo=$AMNEZIAWG_TOOLS_REPO
 amneziawg_tools_ref=$AMNEZIAWG_TOOLS_REF
 amneziawg_vermagic=$vermagic
+package=amneziawg-dkms
+combined_deb=yes
 dest_module_location=/updates
 remake_initrd=no
+touches_boot=no
+touches_grub=no
 INFO
 
 (cd "$OUTPUT_DIR" && sha256sum \
-  "$(basename "$policy_deb")" \
   "$(basename "$dkms_deb")" \
-  "$(basename "$tools_deb")" \
   BUILD-INFO.txt > SHA256SUMS.txt)
 
-ci_log "AmneziaWG debs complete: $OUTPUT_DIR"
-ci_log "policy: $policy_deb"
-ci_log "dkms: $dkms_deb"
-ci_log "tools: $tools_deb"
+ci_log "AmneziaWG combined deb complete: $dkms_deb"
